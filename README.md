@@ -2,43 +2,46 @@
 
 Autenticação de clientes da oficina mecânica por **CPF**: uma função **AWS Lambda (Node.js)** exposta via **Amazon API Gateway**.
 
-> **Status:** estrutura inicial. A função e o Terraform ainda serão implementados.
+> **Status:** estrutura inicial. O código das funções ainda será implementado.
 
 ## Repositórios do projeto
 
 | Repositório | Responsabilidade |
 |---|---|
-| [TechChallenger-infra-kubernetes](https://github.com/arthur-lucas-castro/TechChallenger-infra-kubernetes) | VPC, EKS, node group, ECR, bucket do state |
+| [TechChallenger-infra-kubernetes](https://github.com/arthur-lucas-castro/TechChallenger-infra-kubernetes) | VPC, EKS, node group, ECR, bucket do state, **API Gateway e infraestrutura das Lambdas** |
 | [TechChallenger-infra-database](https://github.com/arthur-lucas-castro/TechChallenger-infra-database) | RDS PostgreSQL |
-| **TechChallenger-severless** (este) | Lambda de autenticação por CPF + API Gateway |
+| **TechChallenger-severless** (este) | Código das Lambdas (autenticação por CPF e Lambda Authorizer) e pipeline que publica esse código |
 | [TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api) | API da oficina (valida o token emitido aqui) |
 
-**Ordem de provisionamento:** 1. infra-kubernetes → 2. infra-database → **3. severless**.
+**Ordem de provisionamento:** 1. infra-kubernetes → 2. infra-database → **3. deploy do código pelo severless**.
 
 ## Fluxo
 
 1. O cliente chama `POST /auth` no API Gateway, enviando o CPF.
 2. A Lambda valida o CPF e procura o cliente na tabela `cliente` do RDS.
-3. Se o cliente existir, a Lambda devolve um **JWT**, assinado com o mesmo segredo (`Jwt__SecretKey`) que a API principal usa para validar.
+3. Se o cliente existir e estiver ativo, a Lambda devolve um **access token** (JWT de 15 minutos, assinado com o mesmo segredo `Jwt__SecretKey` que a API principal usa para validar) e um **refresh token**.
+4. Quando o access token expira, o cliente chama `POST /auth/refresh` para receber um novo par de tokens, sem informar o CPF de novo. `POST /auth/logout` encerra a sessão.
+
+Detalhes do contrato, dos tokens e o diagrama de sequência estão em [docs/auth-flow.md](docs/auth-flow.md).
 
 ## Estrutura
 
 | Pasta | Conteúdo |
 |---|---|
-| `src/` | Handler e regras de autenticação (Node.js) |
+| `src/` | Handlers de `/auth` e do Lambda Authorizer (Node.js) |
 | `tests/` | Testes de unidade |
-| `infra/` | Terraform da Lambda, API Gateway, log group e permissões |
-| `docs/adr/` | Decisões de arquitetura |
-| `.github/workflows/` | CI (lint + testes) e deploy (empacotar + `terraform apply`) |
+| `docs/` | [Fluxo de autenticação](docs/auth-flow.md) e decisões de arquitetura (`docs/adr/`) |
+| `.github/workflows/` | CI (lint + testes) e deploy (empacotar + `aws lambda update-function-code`) |
 
 ## Decisões e integração
 
-O Terraform da Lambda e do API Gateway fica **neste repositório**, em `infra/`, com o state em `key = lambda-auth/terraform.tfstate` no bucket compartilhado ([ADR-002](docs/adr/ADR-002-localizacao-terraform-lambda-api-gateway.md)).
+O Terraform do API Gateway e das Lambdas fica no **TechChallenger-infra-kubernetes**, junto com a VPC e o EKS ([ADR-002](docs/adr/ADR-002-localizacao-terraform-lambda-api-gateway.md)). Este repositório não tem Terraform: o pipeline só publica o código nas funções que já existem.
 
-| Dado | Origem (`terraform_remote_state`) |
+| Dado | Origem |
 |---|---|
-| `vpc_id`, `private_subnet_ids` | infra-kubernetes (`infra-kubernetes/terraform.tfstate`) |
-| `rds_address`, `db_name`, `rds_client_security_group_id` | infra-database (`infra-database/terraform.tfstate`) |
+| `lambda_auth_function_name`, `lambda_authorizer_function_name` | Outputs do infra-kubernetes, usados pelo pipeline de deploy |
+| Conexão com o banco (`/techchallenger/db/*`) | SSM Parameter Store, publicado pelo infra-database e lido pelas Lambdas no cold start |
+| Segredo do JWT (`/techchallenger/jwt/secret`) | SSM Parameter Store, lido pelas Lambdas no cold start |
 
 Restrições do AWS Academy Learner Lab:
 
