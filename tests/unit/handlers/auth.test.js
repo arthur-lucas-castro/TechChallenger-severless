@@ -77,6 +77,44 @@ describe('POST /auth', () => {
     expect(refreshTokenService.createSession).toHaveBeenCalledWith(7);
   });
 
+  it('registra rota, status, duração e CPF mascarado, sem CPF completo nem tokens', async () => {
+    const cpf = generateCpf();
+    customerRepository.findByCpf.mockResolvedValue({ id: 7, nome: 'F', status: 'ATIVO' });
+    customerRepository.canAuthenticate.mockReturnValue(true);
+    tokenService.signAccessToken.mockResolvedValue({ accessToken: 'jwt-secreto', expiresIn: 900 });
+    refreshTokenService.createSession.mockResolvedValue({
+      refreshToken: 'refresh-secreto',
+      refreshExpiresIn: 604800,
+      familyId: 'familia-1',
+    });
+
+    await handler(httpEvent(ROUTE, { cpf }), lambdaContext);
+
+    const output = stdout.mock.calls.map(([line]) => line).join('');
+    expect(JSON.parse(output)).toMatchObject({
+      requestId: 'req-teste',
+      awsRequestId: 'aws-req-teste',
+      route: ROUTE,
+      status: 200,
+      durationMs: expect.any(Number),
+      cpf: '***.456.789-**',
+      clienteId: 7,
+      familiaId: 'familia-1',
+    });
+    expect(output).not.toContain(cpf);
+    expect(output).not.toContain('jwt-secreto');
+    expect(output).not.toContain('refresh-secreto');
+  });
+
+  it('não repete o CPF no log quando a mensagem de erro do banco o inclui', async () => {
+    const cpf = generateCpf();
+    customerRepository.findByCpf.mockRejectedValue(new Error(`falha na busca de ${cpf}`));
+
+    await handler(httpEvent(ROUTE, { cpf }), lambdaContext);
+
+    expect(stdout.mock.calls.map(([line]) => line).join('')).not.toContain(cpf);
+  });
+
   it('responde 404 quando o cliente não existe', async () => {
     customerRepository.findByCpf.mockResolvedValue(null);
 

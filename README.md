@@ -35,6 +35,12 @@ Comandos: `npm test`, `npm run test:coverage`, `npm run lint` e `npm run package
 | `DB_POOL_MAX`                | Não         | `1`              | Conexões por ambiente de execução                                                             |
 | `DB_SSL`                     | Não         | `true`           | `false` só para Postgres local sem TLS                                                        |
 
+## Logs
+
+Cada requisição gera uma linha JSON no stdout, com `requestId` (`requestContext.requestId` do API Gateway, o mesmo dos access logs e do `x-correlation-id` enviado à API), `awsRequestId`, `route`, `status` e `durationMs`. Também podem aparecer `reason` (motivo real de uma recusa), `clienteId`, `familiaId` e `cpf` mascarado (`***.456.789-**`).
+
+O logger oculta campos com nomes sensíveis (`token`, `password` etc.) e remove valores com formato de CPF, JWT ou refresh token de qualquer texto, inclusive de mensagens de erro de bibliotecas.
+
 ## Migrations
 
 Os scripts ficam em `db/migrations/`, numerados (`V001`, `V002`) e idempotentes: cada um roda em uma transação, usa `IF NOT EXISTS` e registra a versão em `auth_schema_migration`. A tabela `cliente` precisa existir antes.
