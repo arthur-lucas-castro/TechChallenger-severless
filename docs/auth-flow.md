@@ -57,13 +57,22 @@ Validação do CPF, feita **antes** de consultar o banco:
 2. não pode ter todos os dígitos iguais (`00000000000`, `11111111111`, ...);
 3. os dois dígitos verificadores devem bater com o cálculo módulo 11.
 
-A consulta usa o CPF normalizado, só com dígitos, e por isso a coluna `cpf` da tabela `cliente` precisa estar gravada nesse mesmo formato:
+A consulta usa o CPF normalizado, só com dígitos. A coluna `numerodocumento` da tabela `cliente` já é gravada nesse formato pelo value object `Documento` da API, e guarda CPF (11 dígitos) ou CNPJ (14 dígitos):
 
 ```sql
-SELECT id, ativo FROM cliente WHERE cpf = $1;
+SELECT id, nome, status FROM cliente WHERE numerodocumento = $1 ORDER BY id LIMIT 1;
 ```
 
-> Os nomes das colunas (`id`, `ativo`) são uma suposição. Ajuste ao schema real da tabela `cliente`.
+O esquema mínimo que a Lambda usa (tabela criada pela API em `database/init/01_schema.sql`):
+
+| Coluna | Tipo | Origem |
+|---|---|---|
+| `id` | `SERIAL` (integer) | API |
+| `nome` | `varchar(50)` | API |
+| `numerodocumento` | `varchar(14)`, só dígitos | API |
+| `status` | `varchar(20) NOT NULL DEFAULT 'ATIVO'`, com `CHECK` em `ATIVO`, `INATIVO` ou `BLOQUEADO` | Migration `db/migrations/V001__cliente_status.sql` deste repositório |
+
+Só o status `ATIVO` autentica. `INATIVO`, `BLOQUEADO` ou qualquer valor desconhecido resultam em `403 CLIENTE_INATIVO`. A tabela não tem `UNIQUE` em `numerodocumento`: se houver duplicidade, vale o registro de menor `id`.
 
 Se o cliente estiver ativo, a Lambda abre uma **nova sessão**:
 
@@ -210,7 +219,22 @@ O HTTP API não permite customizar estas respostas, então elas chegam no format
   - Para eliminar o risco seria preciso unificar os dois casos em um `401 CREDENCIAIS_INVALIDAS`. Fica registrado como trade-off.
 - **Logs.** Nunca registre o CPF completo, o refresh token ou o access token nos logs. Use uma máscara como `***.456.789-**` e, para correlacionar, o `jti` ou o `familia_id`.
 - **Onde o cliente guarda o refresh token.** Em apps móveis, no armazenamento seguro do sistema (Keychain ou Keystore). Em um front-end web, `localStorage` deixa o token exposto a XSS. A alternativa mais segura seria entregar o token em um cookie `HttpOnly; Secure; SameSite=Strict` restrito ao caminho `/auth`, o que muda este contrato. Fica registrado como evolução possível.
-- **Conexão com o banco.** Crie o pool do `pg` fora do handler, com `max` de 1 ou 2 conexões, para reaproveitá-lo entre invocações sem esgotar as conexões do RDS.
+- **Conexão com o banco.** Ver seção 1.7.
+
+### 1.7 Conexões com o RDS
+
+Cada ambiente de execução da Lambda atende uma requisição por vez e mantém o próprio pool. Por isso, **o número de conexões abertas acompanha a concorrência da Lambda**, e ambientes ociosos continuam segurando a conexão até serem reciclados ou até o pool fechá-la (60 s ociosa).
+
+O `db.t3.micro` tem cerca de 1 GB de memória, o que dá um `max_connections` na casa de 80, compartilhado com a API no EKS. Um pico de `POST /auth` pode ocupar todas as conexões. Aí a própria API passa a falhar com `too_many_connections`, e não só o login.
+
+| Mitigação | Viável no Academy? |
+|---|---|
+| Pool de tamanho 1 por ambiente (`DB_POOL_MAX=1`, padrão) | Sim, já implementado |
+| Throttling das rotas `/auth*` no API Gateway | Sim. Também reduz a enumeração de CPFs (seção 1.6) |
+| Concorrência reservada na função (`reserved_concurrent_executions`, ex.: 10) | Sim, se a conta permitir. A AWS exige manter uma folga de concorrência não reservada, e contas com limite baixo recusam a configuração. Nesse caso, o limite da própria conta já funciona como teto |
+| RDS Proxy | Não recomendado: exige role própria e segredo no Secrets Manager |
+
+**Recomendação:** pool de 1, throttling e concorrência reservada de 10. Se o limite for atingido, o gateway responde `429`/`503` em vez de derrubar o banco.
 
 ---
 
@@ -476,7 +500,7 @@ sequenceDiagram
         L-->>GW: 400 REQUISICAO_INVALIDA ou CPF_INVALIDO
         GW-->>C: 400
     else CPF válido
-        L->>DB: SELECT id, ativo FROM cliente WHERE cpf = $1
+        L->>DB: SELECT id, nome, status FROM cliente WHERE numerodocumento = $1
         alt Erro ou timeout no banco
             DB-->>L: Erro
             L-->>GW: 503 SERVICO_INDISPONIVEL
@@ -486,11 +510,11 @@ sequenceDiagram
             L-->>GW: 404 CLIENTE_NAO_ENCONTRADO
             GW-->>C: 404
         else Cliente inativo
-            DB-->>L: id, ativo = false
+            DB-->>L: id, status diferente de ATIVO
             L-->>GW: 403 CLIENTE_INATIVO
             GW-->>C: 403
         else Cliente ativo
-            DB-->>L: id, ativo = true
+            DB-->>L: id, status = ATIVO
             L->>L: Gera refresh token aleatório e nova familia_id
             L->>DB: INSERT refresh_token (hash, familia_id, expira_em, sessao_expira_em)
             L->>DB: DELETE sessões vencidas do cliente

@@ -1,5 +1,6 @@
+const customerRepository = require('../services/customerRepository');
 const { CpfError, normalizeCpf, maskCpf } = require('../utils/cpf');
-const { invalidCpf } = require('../utils/errors');
+const { invalidCpf, customerNotFound, inactiveCustomer } = require('../utils/errors');
 const { parseJsonBody, requireString, withHttp } = require('../utils/http');
 
 function readCpf(event, log) {
@@ -17,7 +18,17 @@ function readCpf(event, log) {
 }
 
 async function authenticate(event, log) {
-  readCpf(event, log);
+  const cpf = readCpf(event, log);
+
+  const customer = await customerRepository.findByCpf(cpf);
+  if (!customer) {
+    throw customerNotFound();
+  }
+  log.add({ clienteId: customer.id });
+  if (!customerRepository.canAuthenticate(customer.status)) {
+    throw inactiveCustomer(`STATUS_${customer.status}`);
+  }
+
   return { statusCode: 501, body: '' };
 }
 

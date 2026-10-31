@@ -1,4 +1,10 @@
-const { AppError, invalidRequest, internalError } = require('./errors');
+const {
+  AppError,
+  invalidRequest,
+  internalError,
+  serviceUnavailable,
+  isUnavailable,
+} = require('./errors');
 const { createLogger } = require('./logger');
 
 const HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
@@ -52,7 +58,7 @@ function toAppError(err, log) {
     errorMessage: err.message,
     stack: err.stack,
   });
-  return internalError();
+  return isUnavailable(err) ? serviceUnavailable() : internalError();
 }
 
 /** Tratamento comum: log de fim de requisição e tradução de erros para o contrato HTTP. */
