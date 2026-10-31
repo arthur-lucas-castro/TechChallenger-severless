@@ -1,5 +1,7 @@
 const auth = require('./handlers/auth');
 const refresh = require('./handlers/refresh');
+const { routeNotFound } = require('./utils/errors');
+const { withHttp } = require('./utils/http');
 
 // Uma única Lambda atende as rotas de autenticação (docs/auth-flow.md, seção 1).
 const routes = {
@@ -7,10 +9,11 @@ const routes = {
   'POST /auth/refresh': refresh.handler,
 };
 
+const unknownRoute = withHttp('DESCONHECIDA', async () => {
+  throw routeNotFound();
+});
+
 exports.handler = async (event, context) => {
-  const route = routes[event.routeKey];
-  if (!route) {
-    return { statusCode: 404, body: '' };
-  }
+  const route = routes[event.routeKey] ?? unknownRoute;
   return route(event, context);
 };
