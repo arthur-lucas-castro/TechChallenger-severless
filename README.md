@@ -35,6 +35,12 @@ Comandos: `npm test`, `npm run test:coverage`, `npm run lint` e `npm run package
 | `DB_POOL_MAX`                | Não         | `1`              | Conexões por ambiente de execução                                                             |
 | `DB_SSL`                     | Não         | `true`           | `false` só para Postgres local sem TLS                                                        |
 
+## Testes
+
+Jest, e não `node:test`, porque ele traz limite de cobertura que reprova o comando e mock de módulos estável, necessários para isolar `pg` e o SSM. No Node 20, o mock de módulos do `node:test` ainda é experimental.
+
+`npm test` roda a suíte. `npm run test:coverage` também mede a cobertura e **falha se qualquer métrica ficar abaixo de 80%**. Por isso, é esse o comando que o CI deve usar. Os CPFs dos testes são fictícios, gerados por algoritmo em `tests/helpers/cpf.js`.
+
 ## Logs
 
 Cada requisição gera uma linha JSON no stdout, com `requestId` (`requestContext.requestId` do API Gateway, o mesmo dos access logs e do `x-correlation-id` enviado à API), `awsRequestId`, `route`, `status` e `durationMs`. Também podem aparecer `reason` (motivo real de uma recusa), `clienteId`, `familiaId` e `cpf` mascarado (`***.456.789-**`).
