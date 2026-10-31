@@ -1,4 +1,5 @@
 const customerRepository = require('../services/customerRepository');
+const refreshTokenService = require('../services/refreshTokenService');
 const tokenService = require('../services/tokenService');
 const { CpfError, normalizeCpf, maskCpf } = require('../utils/cpf');
 const { invalidCpf, customerNotFound, inactiveCustomer } = require('../utils/errors');
@@ -30,8 +31,18 @@ async function authenticate(event, log) {
     throw inactiveCustomer(`STATUS_${customer.status}`);
   }
 
+  // Assina antes de gravar: uma falha aqui não deixa uma sessão órfã no banco.
   const { accessToken, expiresIn } = await tokenService.signAccessToken(customer.id);
-  return json(200, { accessToken, tokenType: 'Bearer', expiresIn });
+  const session = await refreshTokenService.createSession(customer.id);
+  log.add({ familiaId: session.familyId });
+
+  return json(200, {
+    accessToken,
+    tokenType: 'Bearer',
+    expiresIn,
+    refreshToken: session.refreshToken,
+    refreshExpiresIn: session.refreshExpiresIn,
+  });
 }
 
 exports.handler = withHttp('POST /auth', authenticate);

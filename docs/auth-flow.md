@@ -234,7 +234,7 @@ O `db.t3.micro` tem cerca de 1 GB de memória, o que dá um `max_connections` na
 | Concorrência reservada na função (`reserved_concurrent_executions`, ex.: 10) | Sim, se a conta permitir. A AWS exige manter uma folga de concorrência não reservada, e contas com limite baixo recusam a configuração. Nesse caso, o limite da própria conta já funciona como teto |
 | RDS Proxy | Não recomendado: exige role própria e segredo no Secrets Manager |
 
-**Recomendação:** pool de 1, throttling e concorrência reservada de 10. Se o limite for atingido, o gateway responde `429`/`503` em vez de derrubar o banco.
+**Recomendação:** pool de 1, throttling e concorrência reservada de 10. Se o limite for atingido, as requisições excedentes falham no gateway em vez de derrubar o banco.
 
 ---
 
@@ -306,21 +306,22 @@ Um refresh token em JWT não traria nenhuma dessas vantagens sem uma consulta ao
 ```sql
 CREATE TABLE refresh_token (
     id               uuid        PRIMARY KEY,
-    cliente_id       bigint      NOT NULL REFERENCES cliente (id),  -- ajuste ao tipo real de cliente.id
+    cliente_id       integer     NOT NULL REFERENCES cliente (id) ON DELETE CASCADE,
     familia_id       uuid        NOT NULL,                          -- uma família = uma sessão de login
     token_hash       char(64)    NOT NULL UNIQUE,                   -- SHA-256 em hexadecimal
     expira_em        timestamptz NOT NULL,                          -- validade deste token (até 7 dias)
     sessao_expira_em timestamptz NOT NULL,                          -- limite absoluto da sessão (30 dias após o login)
     criado_em        timestamptz NOT NULL DEFAULT now(),
     usado_em         timestamptz,                                   -- preenchido quando o token é trocado
-    revogado_em      timestamptz                                    -- preenchido no logout, na inativação ou na reutilização
+    revogado_em      timestamptz,                                   -- preenchido na troca, no logout, na inativação ou na reutilização
+    substituido_por  uuid REFERENCES refresh_token (id) ON DELETE SET NULL  -- token que substituiu este na troca
 );
 
 CREATE INDEX ix_refresh_token_familia ON refresh_token (familia_id);
 CREATE INDEX ix_refresh_token_cliente ON refresh_token (cliente_id);
 ```
 
-> A migration dessa tabela deve ficar no mesmo lugar que hoje gerencia o schema do banco. O usuário de banco da Lambda precisa de `SELECT` em `cliente` e de `SELECT`, `INSERT`, `UPDATE` e `DELETE` em `refresh_token`.
+> A migration é `db/migrations/V002__refresh_token.sql`, versionada e idempotente, e a forma de aplicá-la está em "Migrations", no README. O usuário de banco da Lambda precisa de `SELECT` em `cliente` e de `SELECT`, `INSERT`, `UPDATE` e `DELETE` em `refresh_token`.
 
 **Renovação com troca do token e detecção de reutilização.** Toda chamada a `/auth/refresh` roda em uma única transação:
 
@@ -329,7 +330,9 @@ CREATE INDEX ix_refresh_token_cliente ON refresh_token (cliente_id);
 3. se `usado_em` estiver preenchido, o token já foi trocado antes e está sendo **reutilizado**. Isso indica que ele vazou: a Lambda revoga **toda a família** (`UPDATE refresh_token SET revogado_em = now() WHERE familia_id = $1 AND revogado_em IS NULL`) e responde `401`. Tanto o atacante quanto o cliente legítimo precisam fazer login de novo;
 4. se `revogado_em` estiver preenchido, ou se `expira_em` ou `sessao_expira_em` já tiverem passado, responde `401`;
 5. se o cliente estiver inativo, revoga a família e responde `403 CLIENTE_INATIVO`;
-6. caso contrário, marca `usado_em = now()` no token atual e insere um novo, com o mesmo `familia_id`, `expira_em = least(now() + 7 dias, sessao_expira_em)` e o mesmo `sessao_expira_em`. Depois faz o `COMMIT` e emite um novo access token.
+6. caso contrário, insere um novo token, com o mesmo `familia_id`, `expira_em = least(now() + 7 dias, sessao_expira_em)` e o mesmo `sessao_expira_em`, e marca o atual com `usado_em = now()`, `revogado_em = now()` e `substituido_por` = id do novo. Depois faz o `COMMIT` e emite um novo access token.
+
+Como a troca também preenche `revogado_em`, a ordem das verificações importa: `usado_em` vem antes de `revogado_em`, e é ele que distingue a reutilização de uma revogação comum. As recusas dos passos 3 e 5 confirmam a transação antes de responder, senão o rollback desfaria a revogação da família.
 
 O `FOR UPDATE` garante que duas renovações simultâneas com o mesmo token não gerem duas sessões. A segunda espera a primeira terminar e cai na regra de reutilização. Isso tem um efeito colateral: **o cliente não pode disparar duas renovações em paralelo**, senão perde a sessão. Os apps devem serializar a chamada de refresh. Se isso virar um problema, uma janela de tolerância de alguns segundos para o token recém-trocado resolve, ao custo de enfraquecer um pouco a detecção de reutilização.
 
@@ -473,7 +476,7 @@ A integração do HTTP API com a API no EKS deve ser privada, via **VPC Link** p
      --type SecureString \
      --value "$(openssl rand -base64 48)"
    ```
-2. A **Lambda de autenticação** e o **Lambda Authorizer** recebem apenas o **nome** do parâmetro, na variável de ambiente `JWT_SECRET_PARAM=/techchallenger/jwt/secret`. Eles leem o valor com `GetParameter --with-decryption` **no cold start** e o guardam em uma variável fora do handler, para as próximas invocações.
+2. A **Lambda de autenticação** e o **Lambda Authorizer** recebem apenas o **nome** do parâmetro, na variável de ambiente `JWT_SECRET_PARAM=/techchallenger/jwt/secret`. Eles leem o valor com descriptografia **no cold start** e o guardam em uma variável fora do handler, para as próximas invocações. A Lambda de autenticação usa uma única chamada `GetParameters` para buscar o segredo e os dados do banco, então a `LabRole` precisa de `ssm:GetParameters`.
 3. A **API no EKS** recebe o segredo como `Jwt__SecretKey` por meio de um Kubernetes Secret. O pipeline do TechChallenger-Api lê o parâmetro no SSM e cria ou atualiza esse Secret.
 
 **Plano B**, se a VPC não tiver NAT e o VPC endpoint não for viável: o Terraform lê o parâmetro com `data "aws_ssm_parameter"` e injeta o valor como variável de ambiente da Lambda de autenticação. O SSM continua sendo a fonte única, mas o valor passa a aparecer no console da Lambda e no tfstate, e por isso o bucket de state precisa ser privado e criptografado. O Authorizer, que fica fora da VPC, continua lendo direto do SSM.
@@ -581,8 +584,8 @@ sequenceDiagram
         L-->>GW: 403 CLIENTE_INATIVO
         GW-->>C: 403
     else Token válido e cliente ativo
-        L->>DB: UPDATE usado_em = now() no token atual
-        L->>DB: INSERT novo refresh_token (mesma familia_id) e COMMIT
+        L->>DB: INSERT novo refresh_token (mesma familia_id)
+        L->>DB: UPDATE usado_em, revogado_em e substituido_por no token atual e COMMIT
         L->>L: Assina novo access token HS256
         L-->>GW: 200 novo accessToken e novo refreshToken
         GW-->>C: 200 tokens (Cache-Control no-store)

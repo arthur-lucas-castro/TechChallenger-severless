@@ -18,6 +18,44 @@ Autenticação de clientes da oficina mecânica por **CPF**: uma função **AWS 
 
 Comandos: `npm test`, `npm run test:coverage`, `npm run lint` e `npm run package`.
 
+## Variáveis de ambiente
+
+| Variável                     | Obrigatória | Padrão           | Descrição                                                                                     |
+| ---------------------------- | ----------- | ---------------- | --------------------------------------------------------------------------------------------- |
+| `JWT_SECRET_PARAM`           | Sim         | -                | Nome do parâmetro SSM com o segredo do JWT (`/techchallenger/jwt/secret`)                     |
+| `DB_PARAM_PREFIX`            | Sim         | -                | Prefixo SSM dos dados do banco (`/techchallenger/db`): `host`, `name`, `username`, `password` |
+| `NODE_EXTRA_CA_CERTS`        | Sim         | -                | `/var/runtime/ca-cert.pem`, para o Node confiar no certificado do RDS                         |
+| `JWT_ISSUER`                 | Não         | `TechChallenger` | Precisa ser igual a `Jwt__Issuer` na API                                                      |
+| `JWT_AUDIENCE`               | Não         | `TechChallenger` | Precisa ser igual a `Jwt__Audience` na API                                                    |
+| `JWT_KID`                    | Não         | `v1`             | Versão da chave, enviada no header do token                                                   |
+| `JWT_EXPIRES_IN_SECONDS`     | Não         | `900`            | Validade do access token                                                                      |
+| `REFRESH_EXPIRES_IN_SECONDS` | Não         | `604800`         | Validade do refresh token                                                                     |
+| `SESSION_MAX_SECONDS`        | Não         | `2592000`        | Limite absoluto da sessão                                                                     |
+| `DB_PORT`                    | Não         | `5432`           | Porta do RDS                                                                                  |
+| `DB_POOL_MAX`                | Não         | `1`              | Conexões por ambiente de execução                                                             |
+| `DB_SSL`                     | Não         | `true`           | `false` só para Postgres local sem TLS                                                        |
+
+## Migrations
+
+Os scripts ficam em `db/migrations/`, numerados (`V001`, `V002`) e idempotentes: cada um roda em uma transação, usa `IF NOT EXISTS` e registra a versão em `auth_schema_migration`. A tabela `cliente` precisa existir antes.
+
+Como o RDS está em subnet privada, os scripts rodam de dentro da VPC, em um pod temporário no EKS, cujos nodes já têm acesso ao banco:
+
+```bash
+DB_HOST=$(aws ssm get-parameter --name /techchallenger/db/host --query Parameter.Value --output text)
+DB_NAME=$(aws ssm get-parameter --name /techchallenger/db/name --query Parameter.Value --output text)
+DB_USER=$(aws ssm get-parameter --name /techchallenger/db/username --query Parameter.Value --output text)
+PGPASSWORD=$(aws ssm get-parameter --name /techchallenger/db/password --with-decryption --query Parameter.Value --output text)
+
+for f in db/migrations/V*.sql; do
+  kubectl run "auth-migration-$RANDOM" -i --rm --restart=Never --image=postgres:16-alpine \
+    --env="PGPASSWORD=$PGPASSWORD" --env=PGSSLMODE=require -- \
+    psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 < "$f"
+done
+```
+
+Aplique as migrations **antes** de publicar o código da Lambda. A senha fica na especificação do pod enquanto ele existe, por isso o pod é apagado ao final (`--rm`).
+
 ## Repositórios do projeto
 
 | Repositório                                                                                               | Responsabilidade                                                                                 |

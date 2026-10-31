@@ -1,7 +1,9 @@
 jest.mock('../../../src/services/customerRepository');
+jest.mock('../../../src/services/refreshTokenService');
 jest.mock('../../../src/services/tokenService');
 
 const customerRepository = require('../../../src/services/customerRepository');
+const refreshTokenService = require('../../../src/services/refreshTokenService');
 const tokenService = require('../../../src/services/tokenService');
 const { handler } = require('../../../src/handlers/auth');
 const { generateCpf, formatCpf } = require('../../helpers/cpf');
@@ -50,10 +52,15 @@ describe('POST /auth', () => {
     },
   );
 
-  it('responde 200 com o access token para cliente ativo', async () => {
+  it('responde 200 com o par de tokens para cliente ativo', async () => {
     customerRepository.findByCpf.mockResolvedValue({ id: 7, nome: 'F', status: 'ATIVO' });
     customerRepository.canAuthenticate.mockReturnValue(true);
     tokenService.signAccessToken.mockResolvedValue({ accessToken: 'jwt', expiresIn: 900 });
+    refreshTokenService.createSession.mockResolvedValue({
+      refreshToken: 'opaco',
+      refreshExpiresIn: 604800,
+      familyId: 'familia-1',
+    });
 
     const response = await handler(httpEvent(ROUTE, { cpf: generateCpf() }), lambdaContext);
 
@@ -63,8 +70,11 @@ describe('POST /auth', () => {
       accessToken: 'jwt',
       tokenType: 'Bearer',
       expiresIn: 900,
+      refreshToken: 'opaco',
+      refreshExpiresIn: 604800,
     });
     expect(tokenService.signAccessToken).toHaveBeenCalledWith(7);
+    expect(refreshTokenService.createSession).toHaveBeenCalledWith(7);
   });
 
   it('responde 404 quando o cliente não existe', async () => {

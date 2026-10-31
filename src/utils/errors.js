@@ -21,6 +21,14 @@ const customerNotFound = () =>
 const inactiveCustomer = (reason) =>
   new AppError(403, 'CLIENTE_INATIVO', 'Cliente inativo. Procure a oficina.', reason);
 
+const invalidRefreshToken = (reason) =>
+  new AppError(
+    401,
+    'REFRESH_TOKEN_INVALIDO',
+    'Sessão inválida ou expirada. Faça login novamente.',
+    reason,
+  );
+
 const routeNotFound = () => new AppError(404, 'ROTA_NAO_ENCONTRADA', 'Rota não encontrada.');
 
 const internalError = () =>
@@ -63,6 +71,7 @@ module.exports = {
   invalidCpf,
   customerNotFound,
   inactiveCustomer,
+  invalidRefreshToken,
   routeNotFound,
   internalError,
   serviceUnavailable,

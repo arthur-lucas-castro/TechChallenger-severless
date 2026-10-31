@@ -19,7 +19,7 @@ EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
 
--- A API só busca por documento na aplicação; o login faz essa busca a cada POST /auth.
+-- Cada POST /auth busca por documento, e a coluna ainda não tem índice.
 CREATE INDEX IF NOT EXISTS ix_cliente_numerodocumento ON cliente (numerodocumento);
 
 INSERT INTO auth_schema_migration (versao) VALUES ('V001') ON CONFLICT DO NOTHING;
