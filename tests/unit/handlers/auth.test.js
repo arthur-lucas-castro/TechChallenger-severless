@@ -1,6 +1,8 @@
 jest.mock('../../../src/services/customerRepository');
+jest.mock('../../../src/services/tokenService');
 
 const customerRepository = require('../../../src/services/customerRepository');
+const tokenService = require('../../../src/services/tokenService');
 const { handler } = require('../../../src/handlers/auth');
 const { generateCpf, formatCpf } = require('../../helpers/cpf');
 const { httpEvent, lambdaContext } = require('../../helpers/event');
@@ -47,6 +49,23 @@ describe('POST /auth', () => {
       expect(body.code).toBe('CPF_INVALIDO');
     },
   );
+
+  it('responde 200 com o access token para cliente ativo', async () => {
+    customerRepository.findByCpf.mockResolvedValue({ id: 7, nome: 'F', status: 'ATIVO' });
+    customerRepository.canAuthenticate.mockReturnValue(true);
+    tokenService.signAccessToken.mockResolvedValue({ accessToken: 'jwt', expiresIn: 900 });
+
+    const response = await handler(httpEvent(ROUTE, { cpf: generateCpf() }), lambdaContext);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['Cache-Control']).toBe('no-store');
+    expect(JSON.parse(response.body)).toEqual({
+      accessToken: 'jwt',
+      tokenType: 'Bearer',
+      expiresIn: 900,
+    });
+    expect(tokenService.signAccessToken).toHaveBeenCalledWith(7);
+  });
 
   it('responde 404 quando o cliente não existe', async () => {
     customerRepository.findByCpf.mockResolvedValue(null);

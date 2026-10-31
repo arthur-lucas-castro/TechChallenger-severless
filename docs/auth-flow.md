@@ -252,10 +252,11 @@ O `kid` identifica a versão da chave e permite trocar o segredo no futuro sem i
 
 ```json
 {
-  "iss": "techchallenger-auth",
-  "aud": "techchallenger-api",
+  "iss": "TechChallenger",
+  "aud": "TechChallenger",
   "sub": "42",
   "role": "cliente",
+  "type": "access",
   "iat": 1793116800,
   "nbf": 1793116800,
   "exp": 1793117700,
@@ -265,8 +266,9 @@ O `kid` identifica a versão da chave e permite trocar o segredo no futuro sem i
 
 | Claim | Valor | Para que serve |
 |---|---|---|
-| `iss` | `techchallenger-auth` | Quem emitiu. A API valida com `ValidIssuer` |
-| `aud` | `techchallenger-api` | Para quem o token vale. A API valida com `ValidAudience` |
+| `iss` | `TechChallenger` (`JWT_ISSUER`) | Quem emitiu. A API valida com `ValidIssuer`, que vem de `Jwt__Issuer` no configmap dela. Os dois valores precisam ser iguais |
+| `aud` | `TechChallenger` (`JWT_AUDIENCE`) | Para quem o token vale. A API valida com `ValidAudience`, que vem de `Jwt__Audience`. Os dois valores precisam ser iguais |
+| `type` | `access` | Tipo do token. O Authorizer aceita somente `access` e recusa qualquer outro valor |
 | `sub` | Id interno do cliente (string) | Identifica o cliente. A API usa esse id para buscar os dados que precisar |
 | `role` | `cliente` | Permite restringir rotas por perfil (`[Authorize(Roles = "cliente")]`) |
 | `iat` | Momento da emissão (epoch em segundos) | Auditoria |
@@ -343,11 +345,19 @@ O `FOR UPDATE` garante que duas renovações simultâneas com o mesmo token não
 
 Todos configuráveis por variável de ambiente: `JWT_EXPIRES_IN_SECONDS`, `REFRESH_EXPIRES_IN_SECONDS` e `SESSION_MAX_SECONDS`.
 
-Na API .NET, reduza o `ClockSkew` do `TokenValidationParameters` de 5 minutos (o padrão) para 30 segundos. Com o padrão, o access token valeria na prática 20 minutos.
+A API .NET já usa `ClockSkew = TimeSpan.Zero`, então o access token vale exatamente 15 minutos também lá.
 
 ### 2.6 Algoritmo e formato do segredo
 
-- **HS256**, porque a API principal já valida com chave simétrica (`Jwt__SecretKey`).
+| | HS256 | RS256 |
+|---|---|---|
+| Chave | Um segredo compartilhado por quem emite e por quem valida | Par de chaves: só a Lambda de autenticação guarda a privada |
+| Quem valida | Lambda Authorizer e API precisam do segredo, e com ele também poderiam **emitir** tokens | Authorizer e API só precisam da chave pública, então um vazamento neles não permite forjar tokens |
+| Mudanças na API | Nenhuma: ela já valida com `Jwt__SecretKey` | Trocar a validação na API e também o login de usuários dela, que emite tokens HS256 com o mesmo segredo |
+| Infraestrutura | Um parâmetro no SSM | Par de chaves no SSM e, para o JWT Authorizer nativo, um JWKS público |
+
+RS256 tem a melhor separação de responsabilidades, mas exige alterar a API. **Decisão: HS256**, porque a API principal já valida com chave simétrica. O caminho de evolução está na seção 3.2.
+
 - O segredo precisa ter **no mínimo 32 bytes**. Com menos que isso, o .NET recusa a chave com o erro `IDX10720`. Gere assim: `openssl rand -base64 48`.
 - Os dois lados precisam transformar o segredo nos **mesmos bytes**. Em Node, `jwt.sign(payload, secret)` com o segredo em string usa os bytes UTF-8. No .NET, use `new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret))`. Se um lado decodificar o segredo como Base64 e o outro usar UTF-8, a assinatura não confere.
 - O refresh token não é assinado, então não usa esse segredo.

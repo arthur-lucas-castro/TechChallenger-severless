@@ -1,7 +1,8 @@
 const customerRepository = require('../services/customerRepository');
+const tokenService = require('../services/tokenService');
 const { CpfError, normalizeCpf, maskCpf } = require('../utils/cpf');
 const { invalidCpf, customerNotFound, inactiveCustomer } = require('../utils/errors');
-const { parseJsonBody, requireString, withHttp } = require('../utils/http');
+const { json, parseJsonBody, requireString, withHttp } = require('../utils/http');
 
 function readCpf(event, log) {
   const rawCpf = requireString(parseJsonBody(event), 'cpf');
@@ -29,7 +30,8 @@ async function authenticate(event, log) {
     throw inactiveCustomer(`STATUS_${customer.status}`);
   }
 
-  return { statusCode: 501, body: '' };
+  const { accessToken, expiresIn } = await tokenService.signAccessToken(customer.id);
+  return json(200, { accessToken, tokenType: 'Bearer', expiresIn });
 }
 
 exports.handler = withHttp('POST /auth', authenticate);
