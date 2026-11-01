@@ -1,6 +1,7 @@
 module.exports = {
   testEnvironment: 'node',
   testMatch: ['<rootDir>/tests/**/*.test.js'],
+  modulePathIgnorePatterns: ['<rootDir>/dist/'],
   clearMocks: true,
   collectCoverageFrom: ['src/**/*.js'],
   coverageReporters: ['text', 'lcov'],
