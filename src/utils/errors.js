@@ -21,6 +21,9 @@ const customerNotFound = () =>
 const inactiveCustomer = (reason) =>
   new AppError(403, 'CLIENTE_INATIVO', 'Cliente inativo. Procure a oficina.', reason);
 
+const invalidCredentials = () =>
+  new AppError(401, 'CREDENCIAIS_INVALIDAS', 'E-mail ou senha inválidos.');
+
 const invalidRefreshToken = (reason) =>
   new AppError(
     401,
@@ -71,6 +74,7 @@ module.exports = {
   invalidCpf,
   customerNotFound,
   inactiveCustomer,
+  invalidCredentials,
   invalidRefreshToken,
   routeNotFound,
   internalError,

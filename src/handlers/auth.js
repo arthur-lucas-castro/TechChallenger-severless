@@ -3,7 +3,7 @@ const refreshTokenService = require('../services/refreshTokenService');
 const tokenService = require('../services/tokenService');
 const { CpfError, normalizeCpf, maskCpf } = require('../utils/cpf');
 const { invalidCpf, customerNotFound, inactiveCustomer } = require('../utils/errors');
-const { json, parseJsonBody, requireString, withHttp } = require('../utils/http');
+const { parseJsonBody, requireString, tokenResponse, withHttp } = require('../utils/http');
 
 function readCpf(event, log) {
   const rawCpf = requireString(parseJsonBody(event), 'cpf');
@@ -32,17 +32,14 @@ async function authenticate(event, log) {
   }
 
   // Assina antes de gravar: uma falha aqui não deixa uma sessão órfã no banco.
-  const { accessToken, expiresIn } = await tokenService.signAccessToken(customer.id);
-  const session = await refreshTokenService.createSession(customer.id);
+  const access = await tokenService.signAccessToken({
+    id: customer.id,
+    role: customerRepository.CUSTOMER_ROLE,
+  });
+  const session = await refreshTokenService.createSession({ clienteId: customer.id });
   log.add({ familiaId: session.familyId });
 
-  return json(200, {
-    accessToken,
-    tokenType: 'Bearer',
-    expiresIn,
-    refreshToken: session.refreshToken,
-    refreshExpiresIn: session.refreshExpiresIn,
-  });
+  return tokenResponse(access, session);
 }
 
 exports.handler = withHttp('POST /auth', authenticate);

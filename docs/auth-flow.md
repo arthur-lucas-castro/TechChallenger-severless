@@ -5,7 +5,7 @@ Este documento define como o cliente da oficina se autentica pelo CPF e como ren
 | Item | Decisão |
 |---|---|
 | Tipo de API Gateway | **HTTP API** (API Gateway v2) |
-| Rotas de autenticação | `POST /auth` (login por CPF), `POST /auth/refresh` (renovação) e `POST /auth/logout` (encerrar sessão), todas atendidas pela mesma Lambda |
+| Rotas de autenticação | `POST /auth` (login de cliente por CPF), `POST /auth/login` (login de `Adm` e `Funcionario` por e-mail e senha), `POST /auth/refresh` (renovação) e `POST /auth/logout` (encerrar sessão), todas atendidas pela mesma Lambda |
 | Access token | JWT **HS256**, validade de **15 minutos** |
 | Refresh token | Valor **opaco e aleatório**, guardado como hash no RDS. Validade de **7 dias**, renovada a cada uso até o limite de **30 dias** de sessão. É **trocado a cada uso**, com detecção de reutilização |
 | Identificação no token | `sub` = id interno do cliente. **Sem CPF e sem hash do CPF** |
@@ -34,7 +34,7 @@ Nenhum recurso exclusivo do REST API é necessário aqui. A falta de **respostas
 
 ## 1. Contrato da Lambda de autenticação
 
-Uma única Lambda atende as três rotas e decide o que fazer pelo `event.routeKey` (`POST /auth`, `POST /auth/refresh` e `POST /auth/logout`). Nenhuma dessas rotas passa pelo Lambda Authorizer.
+Uma única Lambda atende as quatro rotas e decide o que fazer pelo `event.routeKey` (`POST /auth`, `POST /auth/login`, `POST /auth/refresh` e `POST /auth/logout`). Nenhuma dessas rotas passa pelo Lambda Authorizer.
 
 ### 1.1 `POST /auth` — login por CPF
 
@@ -105,6 +105,32 @@ Cache-Control: no-store
 
 O `Cache-Control: no-store` impede que proxies ou o navegador guardem os tokens em cache.
 
+### 1.1.1 `POST /auth/login` — login de `Adm` e `Funcionario`
+
+Substitui o `POST /Auth/login` da API. Valida o e-mail e a senha na tabela `usuario`, cujos hashes BCrypt continuam os mesmos, e responde `200` no mesmo formato de `POST /auth`.
+
+```http
+POST /auth/login
+Content-Type: application/json
+
+{
+  "email": "usuario@exemplo.com",
+  "senha": "senha-ficticia"
+}
+```
+
+```sql
+SELECT id, senhahash, tipo FROM usuario WHERE email = $1;
+```
+
+- O e-mail é convertido para minúsculas antes da busca, como a API fazia.
+- E-mail inexistente e senha errada têm a mesma resposta (`401 CREDENCIAIS_INVALIDAS`) e o mesmo custo: a Lambda também executa o bcrypt, contra um hash descartável, para o tempo de resposta não revelar quem está cadastrado.
+- O `role` do token é o `tipo` do usuário (`Adm` ou `Funcionario`). O `sub` é `usuario.id`.
+- O token deixa de levar o e-mail: a API não lê essa claim, e assim o token não carrega dado pessoal.
+- A tabela `usuario` não tem status. Para encerrar o acesso de alguém, apague o usuário: as sessões caem em cascata, e o access token vigente vence em até 15 minutos.
+
+**Força bruta.** Esta rota é pública e não há bloqueio por tentativas. A proteção é o throttling da rota, que deve ser mais rígido que o das demais, e o custo do bcrypt. O bcrypt também consome CPU da Lambda: com 256 MB uma comparação pode levar alguns segundos, então use **512 MB** e mantenha a concorrência reservada (seção 1.7).
+
 ### 1.2 `POST /auth/refresh` — renovação da sessão
 
 ```http
@@ -118,7 +144,7 @@ Content-Type: application/json
 
 Em caso de sucesso, a Lambda devolve `200` com um **novo** `accessToken` e um **novo** `refreshToken`, no mesmo formato do login. O refresh token enviado deixa de valer na hora (seção 2.4).
 
-A cada renovação o **status do cliente é conferido de novo**. Um cliente inativado perde o acesso em no máximo 15 minutos, quando o access token atual vencer.
+A cada renovação o **status do cliente é conferido de novo**. Um cliente inativado perde o acesso em no máximo 15 minutos, quando o access token atual vencer. Para `Adm` e `Funcionario`, a renovação relê o `tipo`, então uma troca de perfil vale a partir do próximo access token.
 
 ### 1.3 `POST /auth/logout` — encerrar a sessão
 
@@ -156,6 +182,7 @@ Todas as respostas de erro da Lambda seguem o mesmo formato:
 | todas | Body ausente, JSON malformado, ou campo obrigatório ausente ou que não é string | `400` | `REQUISICAO_INVALIDA` | O corpo da requisição é inválido. |
 | `/auth` | CPF com formato ou dígitos verificadores inválidos | `400` | `CPF_INVALIDO` | O CPF informado é inválido. |
 | `/auth` | CPF válido, mas sem cliente cadastrado | `404` | `CLIENTE_NAO_ENCONTRADO` | Cliente não encontrado. |
+| `/auth/login` | E-mail inexistente ou senha errada | `401` | `CREDENCIAIS_INVALIDAS` | E-mail ou senha inválidos. |
 | `/auth`, `/auth/refresh` | Cliente encontrado, mas inativo | `403` | `CLIENTE_INATIVO` | Cliente inativo. Procure a oficina. |
 | `/auth/refresh` | Refresh token inexistente, expirado, revogado ou reutilizado | `401` | `REFRESH_TOKEN_INVALIDO` | Sessão inválida ou expirada. Faça login novamente. |
 | todas | Banco indisponível ou timeout de conexão | `503` | `SERVICO_INDISPONIVEL` | Serviço temporariamente indisponível. Tente novamente. |
@@ -269,8 +296,8 @@ O `kid` identifica a versão da chave e permite trocar o segredo no futuro sem i
 | `iss` | `TechChallenger` (`JWT_ISSUER`) | Quem emitiu. A API valida com `ValidIssuer`, que vem de `Jwt__Issuer` no configmap dela. Os dois valores precisam ser iguais |
 | `aud` | `TechChallenger` (`JWT_AUDIENCE`) | Para quem o token vale. A API valida com `ValidAudience`, que vem de `Jwt__Audience`. Os dois valores precisam ser iguais |
 | `type` | `access` | Tipo do token. O Authorizer aceita somente `access` e recusa qualquer outro valor |
-| `sub` | Id interno do cliente (string) | Identifica o cliente. A API usa esse id para buscar os dados que precisar |
-| `role` | `cliente` | Permite restringir rotas por perfil (`[Authorize(Roles = "cliente")]`) |
+| `sub` | Id de `cliente` ou de `usuario` (string) | Identifica quem autenticou. Os ids das duas tabelas se repetem, então `sub` só tem sentido junto com `role` |
+| `role` | `cliente`, `Adm` ou `Funcionario` | Permite restringir rotas por perfil (`[Authorize(Roles = "Adm")]`) |
 | `iat` | Momento da emissão (epoch em segundos) | Auditoria |
 | `nbf` | Igual a `iat` | Token não vale antes da emissão |
 | `exp` | `iat + 900` | Expiração |
@@ -321,7 +348,7 @@ CREATE INDEX ix_refresh_token_familia ON refresh_token (familia_id);
 CREATE INDEX ix_refresh_token_cliente ON refresh_token (cliente_id);
 ```
 
-> A migration é `db/migrations/V002__refresh_token.sql`, versionada e idempotente, e a forma de aplicá-la está em "Migrations", no README. O usuário de banco da Lambda precisa de `SELECT` em `cliente` e de `SELECT`, `INSERT`, `UPDATE` e `DELETE` em `refresh_token`.
+> As migrations são `db/migrations/V002__refresh_token.sql` e `V003__refresh_token_usuario.sql`, versionadas e idempotentes, e a forma de aplicá-las está em "Migrations", no README. A V003 torna `cliente_id` opcional e acrescenta `usuario_id` (`integer`, FK para `usuario` com `ON DELETE CASCADE`), com um `CHECK` que exige exatamente um dono em cada sessão. O usuário de banco da Lambda precisa de `SELECT` em `cliente` e `usuario`, e de `SELECT`, `INSERT`, `UPDATE` e `DELETE` em `refresh_token`.
 
 **Renovação com troca do token e detecção de reutilização.** Toda chamada a `/auth/refresh` roda em uma única transação:
 
@@ -417,7 +444,7 @@ As rotas protegidas aceitam **somente o access token**. O refresh token nunca é
 | `identity_sources` | `["$request.header.Authorization"]` |
 | `authorizer_result_ttl_in_seconds` | `300` |
 
-O Authorizer é associado a todas as rotas, **exceto** `POST /auth`, `POST /auth/refresh` e `POST /auth/logout`.
+O Authorizer é associado a todas as rotas, **exceto** `POST /auth`, `POST /auth/login`, `POST /auth/refresh` e `POST /auth/logout`.
 
 Comportamento do gateway:
 

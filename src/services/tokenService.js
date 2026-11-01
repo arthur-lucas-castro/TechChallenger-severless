@@ -7,14 +7,15 @@ const DEFAULT_EXPIRES_IN_SECONDS = 15 * 60;
 
 // Mesmos valores de Jwt__Issuer e Jwt__Audience no configmap da API. O token não leva CPF nem hash
 // de CPF (docs/auth-flow.md, seção 2.3).
-async function signAccessToken(customerId) {
+/** @param {{ id: number, role: string }} principal cliente (`cliente`) ou usuário (`Adm`, `Funcionario`) */
+async function signAccessToken({ id, role }) {
   const { jwtSecret } = await getSecrets();
   const expiresIn = positiveIntEnv('JWT_EXPIRES_IN_SECONDS', DEFAULT_EXPIRES_IN_SECONDS);
 
-  const accessToken = jwt.sign({ role: 'cliente', type: 'access' }, jwtSecret, {
+  const accessToken = jwt.sign({ role, type: 'access' }, jwtSecret, {
     algorithm: 'HS256',
     keyid: process.env.JWT_KID ?? 'v1',
-    subject: String(customerId),
+    subject: String(id),
     issuer: process.env.JWT_ISSUER ?? 'TechChallenger',
     audience: process.env.JWT_AUDIENCE ?? 'TechChallenger',
     expiresIn,

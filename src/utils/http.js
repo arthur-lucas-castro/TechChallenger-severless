@@ -13,6 +13,10 @@ function json(statusCode, body) {
   return { statusCode, headers: HEADERS, body: JSON.stringify(body) };
 }
 
+function tokenResponse({ accessToken, expiresIn }, { refreshToken, refreshExpiresIn }) {
+  return json(200, { accessToken, tokenType: 'Bearer', expiresIn, refreshToken, refreshExpiresIn });
+}
+
 function noContent() {
   return { statusCode: 204, headers: { 'Cache-Control': 'no-store' }, body: '' };
 }
@@ -95,4 +99,4 @@ function withHttp(routeKey, fn) {
   };
 }
 
-module.exports = { json, noContent, parseJsonBody, requireString, withHttp };
+module.exports = { json, tokenResponse, noContent, parseJsonBody, requireString, withHttp };

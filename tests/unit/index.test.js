@@ -1,6 +1,7 @@
 jest.mock('../../src/services/customerRepository');
 jest.mock('../../src/services/refreshTokenService');
 jest.mock('../../src/services/tokenService');
+jest.mock('../../src/services/userRepository');
 
 const { handler } = require('../../src/index');
 const { httpEvent, lambdaContext } = require('../helpers/event');
@@ -23,7 +24,7 @@ describe('roteador', () => {
     expect(JSON.parse(response.body).code).toBe('ROTA_NAO_ENCONTRADA');
   });
 
-  it.each(['POST /auth', 'POST /auth/refresh', 'POST /auth/logout'])(
+  it.each(['POST /auth', 'POST /auth/login', 'POST /auth/refresh', 'POST /auth/logout'])(
     'encaminha %s ao handler da rota',
     async (routeKey) => {
       await handler(httpEvent(routeKey), lambdaContext);

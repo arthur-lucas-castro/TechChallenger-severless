@@ -73,8 +73,8 @@ describe('POST /auth', () => {
       refreshToken: 'opaco',
       refreshExpiresIn: 604800,
     });
-    expect(tokenService.signAccessToken).toHaveBeenCalledWith(7);
-    expect(refreshTokenService.createSession).toHaveBeenCalledWith(7);
+    expect(tokenService.signAccessToken).toHaveBeenCalledWith({ id: 7, role: 'cliente' });
+    expect(refreshTokenService.createSession).toHaveBeenCalledWith({ clienteId: 7 });
   });
 
   it('registra rota, status, duração e CPF mascarado, sem CPF completo nem tokens', async () => {

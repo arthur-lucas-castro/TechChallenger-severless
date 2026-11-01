@@ -45,16 +45,16 @@ Jest, e não `node:test`, porque ele traz limite de cobertura que reprova o coma
 
 | Critério        | Zip                                                                   | Container image                             |
 | --------------- | --------------------------------------------------------------------- | ------------------------------------------- |
-| Tamanho         | 48,5 KB, muito abaixo do limite de 50 MB                              | Dezenas de MB, com a imagem base            |
+| Tamanho         | 58,5 KB, muito abaixo do limite de 50 MB                              | Dezenas de MB, com a imagem base            |
 | Cold start      | Menor                                                                 | Maior no primeiro uso da imagem             |
 | Infraestrutura  | `aws lambda update-function-code`, como prevê o ADR-002               | Repositório ECR e novo fluxo de build       |
 | Quando compensa | Dependências pequenas e sem binários, o caso de `pg` e `jsonwebtoken` | Binários nativos ou pacotes acima de 250 MB |
 
 **Recomendação: zip.**
 
-`npm run package` instala as dependências de produção com `npm ci --omit=dev` em uma pasta isolada, `dist/build`, para não apagar as ferramentas de desenvolvimento. Depois gera um bundle minificado com esbuild e grava `dist/lambda-auth.zip`, que contém só `index.js`. O bundle reduz 791 KB de código e `node_modules` para 151 KB, o que diminui o que a Lambda precisa carregar no cold start. Testes, docs e `.git` ficam fora por construção. O `@aws-sdk/client-ssm` não vai no bundle, porque já existe no runtime `nodejs20.x`; por isso ele é dependência de desenvolvimento.
+`npm run package` instala as dependências de produção com `npm ci --omit=dev` em uma pasta isolada, `dist/build`, para não apagar as ferramentas de desenvolvimento. Depois gera um bundle minificado com esbuild e grava `dist/lambda-auth.zip`, que contém só `index.js`. O bundle reduz 906 KB de código e `node_modules` para 173 KB, o que diminui o que a Lambda precisa carregar no cold start. Testes, docs e `.git` ficam fora por construção. O `@aws-sdk/client-ssm` não vai no bundle, porque já existe no runtime `nodejs20.x`; por isso ele é dependência de desenvolvimento.
 
-**Arquitetura.** Não importa para o pacote: `pg` e `jsonwebtoken` são JavaScript puro, sem `pg-native`, e o mesmo zip funciona em `x86_64` e `arm64`. O esbuild é binário, mas só roda na máquina de build. O `arm64` costuma ser mais barato por tempo de execução; use-o se o lab permitir, ou `x86_64`, que é o padrão.
+**Arquitetura.** Não importa para o pacote: `pg`, `jsonwebtoken` e `bcryptjs` são JavaScript puro, sem `pg-native` nem o `bcrypt` nativo, e o mesmo zip funciona em `x86_64` e `arm64`. O esbuild é binário, mas só roda na máquina de build. O `arm64` costuma ser mais barato por tempo de execução; use-o se o lab permitir, ou `x86_64`, que é o padrão.
 
 **Teste local antes de publicar.** Extraia o zip e chame o handler com um evento de exemplo. O `NODE_PATH` supre o SDK que, na AWS, vem do runtime:
 
@@ -68,6 +68,8 @@ NODE_PATH="$PWD/node_modules" node -e "
 ```
 
 A resposta esperada é `400 CPF_INVALIDO`, que prova que o bundle carrega e o handler responde sem AWS. Com um evento válido e sem as variáveis de ambiente, o esperado é `500 ERRO_INTERNO`. Para o fluxo completo, publique na Lambda e invoque com `aws lambda invoke --payload fileb://events/sample-auth.json`, usando um CPF fictício cadastrado.
+
+**Memória.** Configure 512 MB. O CPU da Lambda cresce com a memória, e o bcrypt do `POST /auth/login` (custo 12, em JavaScript puro) leva cerca de 340 ms em um computador comum, mas pode levar alguns segundos com 256 MB. Use timeout de 10 s.
 
 ## Logs
 
@@ -112,21 +114,22 @@ Aplique as migrations **antes** de publicar o código da Lambda. A senha fica na
 1. O cliente chama `POST /auth` no API Gateway, enviando o CPF.
 2. A Lambda valida o CPF e procura o cliente na tabela `cliente` do RDS.
 3. Se o cliente existir e estiver ativo, a Lambda devolve um **access token** (JWT de 15 minutos, assinado com o mesmo segredo `Jwt__SecretKey` que a API principal usa para validar) e um **refresh token**.
-4. Quando o access token expira, o cliente chama `POST /auth/refresh` para receber um novo par de tokens, sem informar o CPF de novo. `POST /auth/logout` encerra a sessão.
+4. `Adm` e `Funcionario` fazem o mesmo em `POST /auth/login`, com e-mail e senha da tabela `usuario`.
+5. Quando o access token expira, o cliente chama `POST /auth/refresh` para receber um novo par de tokens, sem informar as credenciais de novo. `POST /auth/logout` encerra a sessão.
 
 Detalhes do contrato, dos tokens e o diagrama de sequência estão em [docs/auth-flow.md](docs/auth-flow.md).
 
 ## Estrutura
 
-| Pasta                | Conteúdo                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------- |
-| `src/`               | Roteador (`index.js`), `handlers/` (`auth`, `refresh`, `logout`), `services/` e `utils/` |
-| `db/migrations/`     | Scripts SQL versionados e idempotentes                                                   |
-| `events/`            | Eventos de exemplo do API Gateway (payload 2.0)                                          |
-| `scripts/`           | Empacotamento                                                                            |
-| `tests/`             | Testes de unidade                                                                        |
-| `docs/`              | [Fluxo de autenticação](docs/auth-flow.md) e decisões de arquitetura (`docs/adr/`)       |
-| `.github/workflows/` | CI (lint + testes) e deploy (empacotar + `aws lambda update-function-code`)              |
+| Pasta                | Conteúdo                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------- |
+| `src/`               | Roteador (`index.js`), `handlers/` (`auth`, `login`, `refresh`, `logout`), `services/` e `utils/` |
+| `db/migrations/`     | Scripts SQL versionados e idempotentes                                                            |
+| `events/`            | Eventos de exemplo do API Gateway (payload 2.0)                                                   |
+| `scripts/`           | Empacotamento                                                                                     |
+| `tests/`             | Testes de unidade                                                                                 |
+| `docs/`              | [Fluxo de autenticação](docs/auth-flow.md) e decisões de arquitetura (`docs/adr/`)                |
+| `.github/workflows/` | CI (lint + testes) e deploy (empacotar + `aws lambda update-function-code`)                       |
 
 ## Decisões e integração
 

@@ -62,7 +62,7 @@ Recursos gerenciados pelo `infra-kubernetes`:
 | `aws_lambda_function` do Lambda Authorizer | Role `LabRole`, fora da VPC, pacote placeholder e `ignore_changes` no código |
 | `aws_cloudwatch_log_group` das duas funções | |
 | `aws_security_group` `rds-client` | Sem regras próprias. Passa a ser criado aqui, e não no `infra-database` |
-| `aws_apigatewayv2_api` (HTTP API), stage, integrações e rotas | `POST /auth`, `POST /auth/refresh` e `POST /auth/logout` sem authorizer; demais rotas com o authorizer |
+| `aws_apigatewayv2_api` (HTTP API), stage, integrações e rotas | `POST /auth`, `POST /auth/login`, `POST /auth/refresh` e `POST /auth/logout` sem authorizer; demais rotas com o authorizer |
 | `aws_apigatewayv2_authorizer` | Tipo `REQUEST`, resposta simples, TTL de 300 s |
 | `aws_apigatewayv2_vpc_link` e integração com o ALB/NLB interno do EKS | |
 | `aws_lambda_permission` para o API Gateway invocar as duas funções | |

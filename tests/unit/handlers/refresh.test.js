@@ -74,7 +74,7 @@ describe('POST /auth/refresh', () => {
       refreshExpiresIn: 604800,
     });
     expect(body.refreshToken).not.toBe(REFRESH_TOKEN);
-    expect(tokenService.signAccessToken).toHaveBeenCalledWith(7);
+    expect(tokenService.signAccessToken).toHaveBeenCalledWith({ id: 7, role: 'cliente' });
     expect(client.query.mock.calls.some(([sql]) => sql.includes('substituido_por = $1'))).toBe(
       true,
     );
@@ -95,6 +95,15 @@ describe('POST /auth/refresh', () => {
     const response = await handler(httpEvent(ROUTE, undefined, { body: '{' }), lambdaContext);
 
     expect(response.statusCode).toBe(400);
+  });
+
+  it('renova a sessão de um usuário com o perfil atual do banco', async () => {
+    givenStoredToken(row({ cliente_id: null, usuario_id: 3, status: null, tipo: 'Funcionario' }));
+
+    const response = await send();
+
+    expect(response.statusCode).toBe(200);
+    expect(tokenService.signAccessToken).toHaveBeenCalledWith({ id: 3, role: 'Funcionario' });
   });
 
   it('responde 401 para token inexistente', async () => {

@@ -1,5 +1,7 @@
 const db = require('./db');
 
+const CUSTOMER_ROLE = 'cliente';
+
 // Qualquer status fora desta lista bloqueia o acesso, inclusive um valor desconhecido.
 const STATUSES_ALLOWED_TO_AUTHENTICATE = new Set(['ATIVO']);
 
@@ -20,4 +22,4 @@ function canAuthenticate(status) {
   return STATUSES_ALLOWED_TO_AUTHENTICATE.has(status);
 }
 
-module.exports = { findByCpf, canAuthenticate };
+module.exports = { CUSTOMER_ROLE, findByCpf, canAuthenticate };

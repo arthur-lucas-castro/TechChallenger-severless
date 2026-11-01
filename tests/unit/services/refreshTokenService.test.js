@@ -71,14 +71,14 @@ describe('createSession', () => {
   });
 
   it('gera token opaco de 32 bytes em Base64URL', async () => {
-    const { refreshToken } = await createSession(7);
+    const { refreshToken } = await createSession({ clienteId: 7 });
 
     expect(refreshToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(Buffer.from(refreshToken, 'base64url')).toHaveLength(32);
   });
 
   it('grava só o hash, nunca o valor do token', async () => {
-    const { refreshToken } = await createSession(7);
+    const { refreshToken } = await createSession({ clienteId: 7 });
 
     const params = db.query.mock.calls[0][1];
     expect(params).toContain(hashToken(refreshToken));
@@ -86,34 +86,41 @@ describe('createSession', () => {
   });
 
   it('abre uma família nova a cada login', async () => {
-    const first = await createSession(7);
-    const second = await createSession(7);
+    const first = await createSession({ clienteId: 7 });
+    const second = await createSession({ clienteId: 7 });
 
     expect(first.familyId).not.toBe(second.familyId);
     expect(first.refreshToken).not.toBe(second.refreshToken);
   });
 
   it('usa 7 e 30 dias por padrão', async () => {
-    await createSession(7);
+    await createSession({ clienteId: 7 });
 
-    expect(db.query.mock.calls[0][1].slice(4)).toEqual([604800, 2592000]);
+    expect(db.query.mock.calls[0][1].slice(5)).toEqual([604800, 2592000]);
   });
 
   it('respeita as variáveis de ambiente', async () => {
     process.env.REFRESH_EXPIRES_IN_SECONDS = '60';
     process.env.SESSION_MAX_SECONDS = '120';
 
-    await createSession(7);
+    await createSession({ clienteId: 7 });
 
-    expect(db.query.mock.calls[0][1].slice(4)).toEqual([60, 120]);
+    expect(db.query.mock.calls[0][1].slice(5)).toEqual([60, 120]);
   });
 
   it('apaga as sessões vencidas do mesmo cliente', async () => {
-    await createSession(7);
+    await createSession({ clienteId: 7 });
 
     const [sql, params] = db.query.mock.calls[1];
     expect(sql).toContain('DELETE FROM refresh_token');
-    expect(params).toEqual([7]);
+    expect(params).toEqual([7, null]);
+  });
+
+  it('abre sessão de usuário, sem cliente', async () => {
+    await createSession({ usuarioId: 3 });
+
+    expect(db.query.mock.calls[0][1].slice(1, 3)).toEqual([null, 3]);
+    expect(db.query.mock.calls[1][1]).toEqual([null, 3]);
   });
 });
 
@@ -124,7 +131,7 @@ describe('rotateSession', () => {
     const session = await rotateSession(TOKEN, log);
 
     expect(session).toEqual({
-      customerId: 7,
+      principal: { id: 7, role: 'cliente' },
       refreshToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
       refreshExpiresIn: 604800,
     });
@@ -138,6 +145,14 @@ describe('rotateSession', () => {
     expect(updateSql).toContain('usado_em = now()');
     expect(updateSql).toContain('revogado_em = now()');
     expect(updateParams).toEqual([newId, 'token-1']);
+  });
+
+  it('renova usuário sem checar status de cliente, com o tipo do banco', async () => {
+    fakeClient(storedToken({ cliente_id: null, usuario_id: 3, status: null, tipo: 'Adm' }));
+
+    const session = await rotateSession(TOKEN, log);
+
+    expect(session.principal).toEqual({ id: 3, role: 'Adm' });
   });
 
   it('procura pelo hash e trava a linha', async () => {
