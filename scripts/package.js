@@ -51,10 +51,16 @@ async function main() {
 
   const zip = new AdmZip();
   // Permissão explícita: um zip gerado no Windows pode chegar à Lambda sem bit de leitura.
-  zip.addFile('index.js', fs.readFileSync(outfile), '', 0o644 << 16);
+  zip.addFile('index.js', fs.readFileSync(outfile), '', 0o644);
   zip.writeZip(ZIP);
 
-  const unbundled = directorySize(path.join(BUILD, 'node_modules')) + directorySize(path.join(BUILD, 'src'));
+  const mode = (new AdmZip(ZIP).getEntry('index.js').attr >>> 16) & 0o777;
+  if (mode !== 0o644) {
+    throw new Error(`index.js gravado no zip com permissão ${mode.toString(8)}, esperado 644.`);
+  }
+
+  const unbundled =
+    directorySize(path.join(BUILD, 'node_modules')) + directorySize(path.join(BUILD, 'src'));
   console.log(`node_modules + src: ${kb(unbundled)}`);
   console.log(`bundle:             ${kb(fs.statSync(outfile).size)}`);
   console.log(`${path.relative(ROOT, ZIP)}: ${kb(fs.statSync(ZIP).size)}`);

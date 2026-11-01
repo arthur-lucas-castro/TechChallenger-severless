@@ -430,7 +430,7 @@ Resposta do Authorizer:
 // Token válido
 return { isAuthorized: true, context: { clienteId: payload.sub, role: payload.role } };
 
-// Token ausente, malformado, com assinatura inválida, expirado, ou com iss/aud errados
+// Token ausente, malformado, com assinatura inválida, expirado, com iss/aud errados ou type diferente de "access"
 return { isAuthorized: false };
 ```
 
@@ -552,7 +552,7 @@ sequenceDiagram
                 AZ->>SSM: GetParameter /techchallenger/jwt/secret
                 SSM-->>AZ: Segredo
             end
-            AZ->>AZ: Verifica assinatura, iss, aud, exp e nbf
+            AZ->>AZ: Verifica assinatura, iss, aud, exp, nbf e type = access
             AZ-->>GW: isAuthorized true ou false, context clienteId e role
         end
         alt isAuthorized = false (inclusive token expirado)
