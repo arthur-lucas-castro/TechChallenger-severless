@@ -1,0 +1,134 @@
+name: Database Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_migration:
+        description: 'Confirma a execução das migrations de autenticação no RDS (camada extra de confirmação)?'
+        required: true
+        type: choice
+        options:
+          - 'no'
+          - 'yes'
+        default: 'no'
+
+# EKS_CLUSTER_NAME: variável cluster_name do TechChallenger-infra-kubernetes.
+# DB_PARAM_PREFIX: prefixo publicado no SSM pelo TechChallenger-infra-database.
+env:
+  EKS_CLUSTER_NAME: techchallenger-fase1
+  DB_PARAM_PREFIX: /techchallenger/db
+
+concurrency:
+  group: auth-db-migration
+  cancel-in-progress: false
+
+jobs:
+  database-migration:
+    if: github.event.inputs.confirm_migration == 'yes'
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      # Credenciais temporárias do AWS Academy Learner Lab (expiram periodicamente e precisam ser renovadas nos secrets do repositório).
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.0'
+
+      - name: Configurar kubeconfig do cluster EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name "$EKS_CLUSTER_NAME" \
+            --region us-east-1
+
+      # O RDS está em subnet privada: o psql roda em um Job dentro do cluster.
+      - name: Publicar scripts e credenciais do banco no cluster
+        run: |
+          param() {
+            aws ssm get-parameter --name "$DB_PARAM_PREFIX/$1" --with-decryption \
+              --query 'Parameter.Value' --output text
+          }
+          host=$(param host)
+          name=$(param name)
+          username=$(param username)
+          password=$(param password)
+          echo "::add-mask::$password"
+
+          kubectl create configmap auth-db-migration-scripts \
+            --from-file=db/migrations/ \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic auth-db-migration-env \
+            --from-literal=PGHOST="$host" \
+            --from-literal=PGDATABASE="$name" \
+            --from-literal=PGUSER="$username" \
+            --from-literal=PGPASSWORD="$password" \
+            --dry-run=client -o yaml | kubectl apply -f - > /dev/null
+
+      - name: Remover execução anterior do Job de migração
+        run: kubectl delete job auth-db-migration --ignore-not-found=true
+
+      - name: Rodar migrations como Kubernetes Job no cluster EKS
+        run: |
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: auth-db-migration
+            labels:
+              app: techchallenger-auth-db-migration
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 300
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: migrate
+                    image: postgres:16-alpine
+                    command: ["sh", "-ec"]
+                    args:
+                      - |
+                        for script in /migrations/V*.sql; do
+                          echo "Aplicando $script"
+                          psql -v ON_ERROR_STOP=1 -f "$script"
+                        done
+                        psql -c "SELECT versao, aplicada_em FROM auth_schema_migration ORDER BY versao"
+                    env:
+                      - name: PGSSLMODE
+                        value: require
+                    envFrom:
+                      - secretRef:
+                          name: auth-db-migration-env
+                    volumeMounts:
+                      - name: migration-scripts
+                        mountPath: /migrations
+                volumes:
+                  - name: migration-scripts
+                    configMap:
+                      name: auth-db-migration-scripts
+          EOF
+
+      - name: Aguardar conclusão do Job de migração
+        run: |
+          if ! kubectl wait --for=condition=complete --timeout=120s job/auth-db-migration; then
+            echo "Migração falhou ou não completou a tempo. Logs do Job:"
+            kubectl logs job/auth-db-migration --all-containers
+            exit 1
+          fi
+          kubectl logs job/auth-db-migration
+
+      - name: Remover credenciais do banco do cluster
+        if: always()
+        run: kubectl delete secret auth-db-migration-env --ignore-not-found=true

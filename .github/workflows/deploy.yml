@@ -1,0 +1,126 @@
+name: Deploy Lambda
+
+on:
+  # Deploy avulso: redeploy ou volta de versão a partir de uma release ou da main.
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: 'Confirma o deploy da Lambda (camada extra de confirmação)?'
+        required: true
+        type: choice
+        options:
+          - 'no'
+          - 'yes'
+        default: 'no'
+  # Chamado pelo ci-cd.yml depois do lint e dos testes.
+  workflow_call:
+    inputs:
+      confirm_deploy:
+        required: true
+        type: string
+
+# Só publica o código: runtime, memória, variáveis e rotas ficam no Terraform do
+# TechChallenger-infra-kubernetes (ADR-002). O nome padrão precisa ser o mesmo do
+# output lambda_auth_function_name; se for outro, defina a variável do repositório.
+env:
+  LAMBDA_FUNCTION_NAME: ${{ vars.LAMBDA_AUTH_FUNCTION_NAME || 'techchallenger-fase1-auth' }}
+
+concurrency:
+  group: deploy-lambda-auth
+  cancel-in-progress: false
+
+jobs:
+  deploy-lambda:
+    if: >
+      inputs.confirm_deploy == 'yes' &&
+      (startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    environment: aws-deploy
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Testes
+        run: npm test -- --silent
+
+      - name: Empacotar a Lambda
+        run: npm run package
+
+      # Credenciais temporárias do AWS Academy Learner Lab (expiram periodicamente e precisam ser renovadas nos secrets do repositório).
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Guardar o pacote atual para rollback
+        id: previous
+        run: |
+          url=$(aws lambda get-function --function-name "$LAMBDA_FUNCTION_NAME" \
+            --query 'Code.Location' --output text)
+          curl -fsS -o previous.zip "$url"
+
+      - name: Publicar o novo código
+        id: update
+        run: |
+          aws lambda update-function-code \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --zip-file fileb://dist/lambda-auth.zip \
+            --query '{Sha256:CodeSha256,Tamanho:CodeSize}' --output table
+          aws lambda wait function-updated-v2 --function-name "$LAMBDA_FUNCTION_NAME"
+
+      # Só o statusCode é exibido: a resposta pode conter tokens.
+      - name: Smoke test do pacote (CPF inválido, sem banco)
+        run: |
+          jq '.body = "{\"cpf\":\"123\"}"' events/sample-auth.json > smoke-event.json
+          aws lambda invoke --function-name "$LAMBDA_FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload fileb://smoke-event.json smoke-out.json > /dev/null
+          status=$(jq -r '.statusCode' smoke-out.json)
+          rm -f smoke-out.json
+          echo "POST /auth com CPF inválido: $status"
+          if [ "$status" != "400" ]; then
+            echo "::error::Esperado 400. A função não carregou ou o handler está errado."
+            exit 1
+          fi
+
+      # Um CPF válido passa pelo SSM, pelo TLS e pela tabela cliente. Status 500 ou 503
+      # indica parâmetro ausente no SSM, RDS inacessível ou migration não aplicada.
+      - name: Smoke test da integração (SSM e RDS)
+        run: |
+          aws lambda invoke --function-name "$LAMBDA_FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload fileb://events/sample-auth.json smoke-out.json > /dev/null
+          status=$(jq -r '.statusCode' smoke-out.json)
+          rm -f smoke-out.json
+          echo "POST /auth com CPF válido: $status"
+          case "$status" in
+            200|403|404) ;;
+            *)
+              echo "::error::Esperado 200, 403 ou 404. Consulte os logs da função no CloudWatch."
+              exit 1
+              ;;
+          esac
+
+      - name: Rollback para o pacote anterior
+        if: failure() && steps.update.outcome != 'skipped' && steps.previous.outcome == 'success'
+        run: |
+          aws lambda update-function-code \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --zip-file fileb://previous.zip \
+            --query 'CodeSha256' --output text
+          aws lambda wait function-updated-v2 --function-name "$LAMBDA_FUNCTION_NAME"
+          echo "::warning::Deploy revertido para o pacote anterior."

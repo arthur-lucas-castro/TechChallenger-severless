@@ -71,6 +71,26 @@ A resposta esperada é `400 CPF_INVALIDO`, que prova que o bundle carrega e o ha
 
 **Memória.** Configure 512 MB. O CPU da Lambda cresce com a memória, e o bcrypt do `POST /auth/login` (custo 12, em JavaScript puro) leva cerca de 340 ms em um computador comum, mas pode levar alguns segundos com 256 MB. Use timeout de 10 s.
 
+## Pipelines
+
+| Workflow                                   | Gatilho                                                                    | O que faz                                                                                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/ci-cd.yml`              | Todo pull request; manual em `release/*`, com confirmação                  | Lint, testes com cobertura mínima e pacote. No disparo manual, chama o deploy e abre o PR para a `main`                                  |
+| `.github/workflows/deploy.yml`             | Chamado pelo `ci-cd.yml`; manual em `release/*` ou `main`, com confirmação | Testa, empacota, publica com `update-function-code`, faz dois smoke tests na função publicada e volta ao pacote anterior se algum falhar |
+| `.github/workflows/database-migration.yml` | Manual, com confirmação                                                    | Lê as credenciais do SSM e aplica `db/migrations/V*.sql` em um Job no EKS, usando um Secret temporário do Kubernetes                     |
+
+**Ordem do primeiro deploy:** `Database Migration` da API (cria `cliente` e `usuario`) → `Database Migration` deste repositório → `CI/CD Pipeline` em `release/X.Y.Z`. Sem as migrations, o smoke test de integração falha e o deploy é revertido.
+
+Configure no GitHub os secrets da AWS no ambiente `aws-deploy`, e os demais itens no repositório:
+
+| Item                                                              | Tipo     | Observação                                                                                  |
+| ----------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Secret   | Credenciais do Learner Lab. Expiram a cada sessão e precisam ser renovadas                  |
+| `RELEASE_MERGE_TOKEN`                                             | Secret   | Opcional, no repositório. Sem ele, usa o `GITHUB_TOKEN` para abrir o PR para a `main`       |
+| `LAMBDA_AUTH_FUNCTION_NAME`                                       | Variável | Opcional. O padrão é `techchallenger-fase1-auth`; precisa coincidir com o nome no Terraform |
+
+O smoke test de integração invoca a função com `events/sample-auth.json`. Ele aceita `200`, `403` e `404` e nunca exibe o corpo da resposta.
+
 ## Logs
 
 Cada requisição gera uma linha JSON no stdout, com `requestId` (`requestContext.requestId` do API Gateway, o mesmo dos access logs e do `x-correlation-id` enviado à API), `awsRequestId`, `route`, `status` e `durationMs`. Também podem aparecer `reason` (motivo real de uma recusa), `clienteId`, `familiaId` e `cpf` mascarado (`***.456.789-**`).
