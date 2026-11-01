@@ -1,0 +1,13 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /auth",
+  "rawPath": "/auth",
+  "rawQueryString": "",
+  "headers": { "content-type": "application/json" },
+  "requestContext": {
+    "requestId": "sample-request-id-auth",
+    "http": { "method": "POST", "path": "/auth" }
+  },
+  "body": "{\"cpf\":\"123.456.789-09\"}",
+  "isBase64Encoded": false
+}

@@ -1,0 +1,13 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /auth/logout",
+  "rawPath": "/auth/logout",
+  "rawQueryString": "",
+  "headers": { "content-type": "application/json" },
+  "requestContext": {
+    "requestId": "sample-request-id-logout",
+    "http": { "method": "POST", "path": "/auth/logout" }
+  },
+  "body": "{\"refreshToken\":\"q3M1x9oK7cVd2bN8rT0yWfE5hJ4uA6sZ1gL0pXcVb2E\"}",
+  "isBase64Encoded": false
+}

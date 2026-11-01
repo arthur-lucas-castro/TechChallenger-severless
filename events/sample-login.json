@@ -1,0 +1,13 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /auth/login",
+  "rawPath": "/auth/login",
+  "rawQueryString": "",
+  "headers": { "content-type": "application/json" },
+  "requestContext": {
+    "requestId": "sample-request-id-login",
+    "http": { "method": "POST", "path": "/auth/login" }
+  },
+  "body": "{\"email\":\"usuario@exemplo.com\",\"senha\":\"senha-ficticia\"}",
+  "isBase64Encoded": false
+}

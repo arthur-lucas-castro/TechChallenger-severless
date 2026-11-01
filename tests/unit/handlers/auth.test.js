@@ -1,0 +1,178 @@
+jest.mock('../../../src/services/customerRepository');
+jest.mock('../../../src/services/refreshTokenService');
+jest.mock('../../../src/services/tokenService');
+
+const customerRepository = require('../../../src/services/customerRepository');
+const refreshTokenService = require('../../../src/services/refreshTokenService');
+const tokenService = require('../../../src/services/tokenService');
+const { handler } = require('../../../src/handlers/auth');
+const { generateCpf, formatCpf } = require('../../helpers/cpf');
+const { httpEvent, lambdaContext } = require('../../helpers/event');
+
+const ROUTE = 'POST /auth';
+
+function parse(response) {
+  return { status: response.statusCode, body: JSON.parse(response.body) };
+}
+
+describe('POST /auth', () => {
+  let stdout;
+
+  beforeEach(() => {
+    stdout = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stdout.mockRestore();
+  });
+
+  it.each([
+    ['body ausente', httpEvent(ROUTE)],
+    ['JSON malformado', httpEvent(ROUTE, undefined, { body: '{"cpf":' })],
+    ['body que não é objeto', httpEvent(ROUTE, [1, 2])],
+    ['body null', httpEvent(ROUTE, null)],
+    ['campo cpf ausente', httpEvent(ROUTE, {})],
+    ['cpf que não é string', httpEvent(ROUTE, { cpf: 12345678909 })],
+  ])('responde 400 REQUISICAO_INVALIDA para %s', async (_, event) => {
+    const { status, body } = parse(await handler(event, lambdaContext));
+    expect(status).toBe(400);
+    expect(body).toEqual({
+      code: 'REQUISICAO_INVALIDA',
+      message: 'O corpo da requisição é inválido.',
+      requestId: 'req-teste',
+    });
+  });
+
+  it.each(['123', '11111111111', '12345678900'])(
+    'responde 400 CPF_INVALIDO para %s',
+    async (cpf) => {
+      const { status, body } = parse(await handler(httpEvent(ROUTE, { cpf }), lambdaContext));
+      expect(status).toBe(400);
+      expect(body.code).toBe('CPF_INVALIDO');
+    },
+  );
+
+  it('responde 200 com o par de tokens para cliente ativo', async () => {
+    customerRepository.findByCpf.mockResolvedValue({ id: 7, nome: 'F', status: 'ATIVO' });
+    customerRepository.canAuthenticate.mockReturnValue(true);
+    tokenService.signAccessToken.mockResolvedValue({ accessToken: 'jwt', expiresIn: 900 });
+    refreshTokenService.createSession.mockResolvedValue({
+      refreshToken: 'opaco',
+      refreshExpiresIn: 604800,
+      familyId: 'familia-1',
+    });
+
+    const response = await handler(httpEvent(ROUTE, { cpf: generateCpf() }), lambdaContext);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['Cache-Control']).toBe('no-store');
+    expect(JSON.parse(response.body)).toEqual({
+      accessToken: 'jwt',
+      tokenType: 'Bearer',
+      expiresIn: 900,
+      refreshToken: 'opaco',
+      refreshExpiresIn: 604800,
+    });
+    expect(tokenService.signAccessToken).toHaveBeenCalledWith({ id: 7, role: 'cliente' });
+    expect(refreshTokenService.createSession).toHaveBeenCalledWith({ clienteId: 7 });
+  });
+
+  it('registra rota, status, duração e CPF mascarado, sem CPF completo nem tokens', async () => {
+    const cpf = generateCpf();
+    customerRepository.findByCpf.mockResolvedValue({ id: 7, nome: 'F', status: 'ATIVO' });
+    customerRepository.canAuthenticate.mockReturnValue(true);
+    tokenService.signAccessToken.mockResolvedValue({ accessToken: 'jwt-secreto', expiresIn: 900 });
+    refreshTokenService.createSession.mockResolvedValue({
+      refreshToken: 'refresh-secreto',
+      refreshExpiresIn: 604800,
+      familyId: 'familia-1',
+    });
+
+    await handler(httpEvent(ROUTE, { cpf }), lambdaContext);
+
+    const output = stdout.mock.calls.map(([line]) => line).join('');
+    expect(JSON.parse(output)).toMatchObject({
+      requestId: 'req-teste',
+      awsRequestId: 'aws-req-teste',
+      route: ROUTE,
+      status: 200,
+      durationMs: expect.any(Number),
+      cpf: '***.456.789-**',
+      clienteId: 7,
+      familiaId: 'familia-1',
+    });
+    expect(output).not.toContain(cpf);
+    expect(output).not.toContain('jwt-secreto');
+    expect(output).not.toContain('refresh-secreto');
+  });
+
+  it('não repete o CPF no log quando a mensagem de erro do banco o inclui', async () => {
+    const cpf = generateCpf();
+    customerRepository.findByCpf.mockRejectedValue(new Error(`falha na busca de ${cpf}`));
+
+    await handler(httpEvent(ROUTE, { cpf }), lambdaContext);
+
+    expect(stdout.mock.calls.map(([line]) => line).join('')).not.toContain(cpf);
+  });
+
+  it('responde 404 quando o cliente não existe', async () => {
+    customerRepository.findByCpf.mockResolvedValue(null);
+
+    const event = httpEvent(ROUTE, { cpf: generateCpf() });
+    const { status, body } = parse(await handler(event, lambdaContext));
+
+    expect(status).toBe(404);
+    expect(body.code).toBe('CLIENTE_NAO_ENCONTRADO');
+  });
+
+  it.each(['INATIVO', 'BLOQUEADO'])('responde 403 para cliente %s', async (customerStatus) => {
+    customerRepository.findByCpf.mockResolvedValue({ id: 1, nome: 'F', status: customerStatus });
+    customerRepository.canAuthenticate.mockReturnValue(false);
+
+    const event = httpEvent(ROUTE, { cpf: generateCpf() });
+    const { status, body } = parse(await handler(event, lambdaContext));
+
+    expect(status).toBe(403);
+    expect(body.code).toBe('CLIENTE_INATIVO');
+  });
+
+  it('busca o cliente pelo CPF normalizado', async () => {
+    customerRepository.findByCpf.mockResolvedValue(null);
+    const cpf = generateCpf();
+
+    await handler(httpEvent(ROUTE, { cpf: formatCpf(cpf) }), lambdaContext);
+
+    expect(customerRepository.findByCpf).toHaveBeenCalledWith(cpf);
+  });
+
+  it('responde 503 sem detalhes quando o banco está indisponível', async () => {
+    customerRepository.findByCpf.mockRejectedValue(
+      Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:5432'), { code: 'ECONNREFUSED' }),
+    );
+
+    const response = await handler(httpEvent(ROUTE, { cpf: generateCpf() }), lambdaContext);
+
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body).code).toBe('SERVICO_INDISPONIVEL');
+    expect(response.body).not.toContain('10.0.0.1');
+  });
+
+  it('responde 500 sem detalhes para erro inesperado', async () => {
+    customerRepository.findByCpf.mockRejectedValue(new Error('relation "cliente" does not exist'));
+
+    const response = await handler(httpEvent(ROUTE, { cpf: generateCpf() }), lambdaContext);
+
+    expect(response.statusCode).toBe(500);
+    expect(JSON.parse(response.body).code).toBe('ERRO_INTERNO');
+    expect(response.body).not.toContain('relation');
+  });
+
+  it('entende body em Base64', async () => {
+    const event = httpEvent(ROUTE, undefined, {
+      body: Buffer.from('{"cpf":"123"}').toString('base64'),
+      isBase64Encoded: true,
+    });
+    const { body } = parse(await handler(event, lambdaContext));
+    expect(body.code).toBe('CPF_INVALIDO');
+  });
+});

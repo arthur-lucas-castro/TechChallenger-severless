@@ -1,0 +1,35 @@
+{
+  "name": "techchallenger-severless",
+  "version": "1.0.0",
+  "description": "Lambda de autenticação por CPF da oficina mecânica (access token JWT + refresh token rotativo)",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "package": "node scripts/package.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-ssm": "^3.1152.0",
+    "@eslint/js": "^10.0.1",
+    "adm-zip": "^0.6.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.13.0",
+    "jest": "^30.5.2",
+    "prettier": "^3.9.10"
+  }
+}

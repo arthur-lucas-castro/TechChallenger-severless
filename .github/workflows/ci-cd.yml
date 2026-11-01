@@ -1,0 +1,108 @@
+name: CI/CD Pipeline
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: 'Confirma o deploy da Lambda (camada extra de confirmação)?'
+        required: true
+        type: choice
+        options:
+          - 'no'
+          - 'yes'
+        default: 'no'
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # Falha se a cobertura ficar abaixo de 80% (jest.config.js).
+      - name: Testes com cobertura
+        run: npm run test:coverage
+
+      - name: Empacotar a Lambda
+        run: npm run package
+
+      - name: Upload do pacote e da cobertura como artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lambda-auth-${{ github.sha }}
+          path: |
+            dist/lambda-auth.zip
+            coverage/lcov.info
+          if-no-files-found: ignore
+          retention-days: 15
+
+  deploy:
+    needs: quality
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.confirm_deploy == 'yes' &&
+      startsWith(github.ref, 'refs/heads/release/')
+    uses: ./.github/workflows/deploy.yml
+    with:
+      confirm_deploy: 'yes'
+    secrets: inherit
+
+  merge-to-main:
+    needs: deploy
+    if: success() && startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Verificar se há commits novos em relação à main
+        id: diff-check
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          ahead=$(gh api "repos/${{ github.repository }}/compare/main...${{ github.ref_name }}" --jq '.ahead_by')
+          echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
+          if [ "$ahead" = "0" ]; then
+            echo "Branch ${{ github.ref_name }} já está totalmente mesclada na main — nada para mesclar."
+          fi
+
+      - name: Criar Pull Request de release para main
+        if: steps.diff-check.outputs.ahead != '0'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          existing=$(gh pr list --base main --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            echo "PR #$existing já existe para ${{ github.ref_name }} -> main."
+          else
+            gh pr create \
+              --base main \
+              --head "${{ github.ref_name }}" \
+              --title "Release ${{ github.ref_name }}" \
+              --body "Merge automático gerado pela pipeline após deploy bem-sucedido da Lambda."
+          fi
+
+      - name: Habilitar auto-merge no Pull Request
+        if: steps.diff-check.outputs.ahead != '0'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ github.ref_name }}" --auto --merge
