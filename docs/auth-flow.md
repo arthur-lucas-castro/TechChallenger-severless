@@ -396,6 +396,8 @@ RS256 tem a melhor separação de responsabilidades, mas exige alterar a API. **
 
 ## 3. Validação do JWT nas rotas protegidas
 
+> **Situação atual:** o Lambda Authorizer recomendado abaixo **não foi implementado** nesta entrega. Hoje a validação acontece só no middleware `JwtBearer` da API no EKS (opção c), que já garante a proteção das rotas. O authorizer continua como a próxima evolução. A decisão está registrada na [RFC-003 do TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/rfc/RFC-003-estrategia-de-autenticacao.md).
+
 As rotas protegidas aceitam **somente o access token**. O refresh token nunca é enviado a elas, e o Authorizer não conhece a tabela `refresh_token`.
 
 ### 3.1 Comparação
@@ -515,6 +517,8 @@ O Secrets Manager também funciona, mas cobra pelo segredo e só traria vantagem
 ## 5. Diagrama de sequência
 
 O diagrama mostra três fluxos: o login por CPF, a chamada a uma rota protegida e a renovação com refresh token. O logout não aparece porque é uma única revogação no banco seguida de `204`.
+
+> Este diagrama inclui o Lambda Authorizer recomendado na seção 3, que **não foi implementado**. O fluxo como roda hoje, com a validação só na API, está nos [diagramas de sequência do TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/arquitetura/diagramas-de-sequencia.md).
 
 ```mermaid
 sequenceDiagram

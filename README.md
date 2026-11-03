@@ -2,7 +2,7 @@
 
 Autenticação de clientes da oficina mecânica por **CPF**: uma função **AWS Lambda (Node.js)** exposta via **Amazon API Gateway**.
 
-> **Status:** Lambda de autenticação implementada, ainda sem deploy. O Lambda Authorizer ainda não foi implementado.
+> **Status:** em produção na função `techchallenger-fase1-auth`, publicada automaticamente no merge de uma `release/X.Y.Z` na `main`, e monitorada pelo Datadog. A validação dos tokens nas rotas protegidas é feita pela API; o Lambda Authorizer descrito no [auth-flow.md](docs/auth-flow.md) não foi implementado.
 
 ## Tecnologias e dados para o Terraform
 
@@ -144,12 +144,12 @@ Aplique as migrations **antes** de publicar o código da Lambda. A senha fica na
 
 ## Repositórios do projeto
 
-| Repositório                                                                                               | Responsabilidade                                                                                 |
-| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [TechChallenger-infra-kubernetes](https://github.com/arthur-lucas-castro/TechChallenger-infra-kubernetes) | VPC, EKS, node group, ECR, bucket do state, **API Gateway e infraestrutura das Lambdas**         |
-| [TechChallenger-infra-database](https://github.com/arthur-lucas-castro/TechChallenger-infra-database)     | RDS PostgreSQL                                                                                   |
-| **TechChallenger-severless** (este)                                                                       | Código das Lambdas (autenticação por CPF e Lambda Authorizer) e pipeline que publica esse código |
-| [TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api)                           | API da oficina (valida o token emitido aqui)                                                     |
+| Repositório                                                                                               | Responsabilidade                                                                                            |
+| --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [TechChallenger-infra-kubernetes](https://github.com/arthur-lucas-castro/TechChallenger-infra-kubernetes) | VPC, EKS, node group, ECR, bucket do state, **API Gateway e infraestrutura das Lambdas**                    |
+| [TechChallenger-infra-database](https://github.com/arthur-lucas-castro/TechChallenger-infra-database)     | RDS PostgreSQL                                                                                              |
+| **TechChallenger-severless** (este)                                                                       | Código da Lambda de autenticação (CPF, e-mail e senha, refresh e logout) e pipeline que publica esse código |
+| [TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api)                           | API da oficina (valida o token emitido aqui)                                                                |
 
 **Ordem de provisionamento:** 1. infra-kubernetes → 2. infra-database → **3. deploy do código pelo severless**.
 
@@ -162,6 +162,41 @@ Aplique as migrations **antes** de publicar o código da Lambda. A senha fica na
 5. Quando o access token expira, o cliente chama `POST /auth/refresh` para receber um novo par de tokens, sem informar as credenciais de novo. `POST /auth/logout` encerra a sessão.
 
 Detalhes do contrato, dos tokens e o diagrama de sequência estão em [docs/auth-flow.md](docs/auth-flow.md).
+
+## Arquitetura deste repositório
+
+```mermaid
+flowchart LR
+    cli(["Cliente / Atendente"])
+    gw["API Gateway HTTP API<br/>POST /auth, /auth/login,<br/>/auth/refresh, /auth/logout<br/>throttling 5 req/s"]
+    subgraph lambda["Lambda techchallenger-fase1-auth (Node.js 20, VPC privada)"]
+        wrap["Wrapper datadog-lambda-js"]
+        idx["index.handler<br/>roteia por routeKey"]
+        h["handlers: auth, login,<br/>refresh, logout"]
+        svc["services: customerRepository,<br/>userRepository, tokenService,<br/>refreshTokenService, secrets"]
+        ext["Datadog Extension"]
+    end
+    ssm[("SSM Parameter Store<br/>/techchallenger/db/*<br/>/techchallenger/jwt/secret")]
+    rds[("RDS PostgreSQL<br/>cliente, usuario,<br/>refresh_token")]
+    dd["Datadog<br/>logs, traces, métricas"]
+    gha["GitHub Actions<br/>ci-cd.yml → deploy.yml"]
+    api["API da oficina (EKS)<br/>valida o JWT com o mesmo segredo"]
+
+    cli --> gw --> wrap --> idx --> h --> svc
+    svc -- "cold start" --> ssm
+    svc -- "SQL (pg)" --> rds
+    ext -- "HTTPS via NAT" --> dd
+    gha -- "update-function-code + smoke tests" --> lambda
+    cli -. "Bearer accessToken" .-> api
+```
+
+## Links
+
+| O quê                       | Onde                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Endpoint                    | `<api_gateway_endpoint>/auth`: output `api_gateway_endpoint` do TechChallenger-infra-kubernetes                                                                                                                                                                                                                                                    |
+| Postman                     | [docs/TechChallenger-Auth.postman_collection.json](docs/TechChallenger-Auth.postman_collection.json) (rotas de autenticação) e a [collection E2E da API](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/TechChallenger-Gateway-E2E.postman_collection.json), que cobre a autenticação e o consumo das rotas protegidas   |
+| Documentação da arquitetura | [Índice no TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/arquitetura/README.md), com diagrama de componentes, diagramas de sequência e a [RFC-003 (estratégia de autenticação)](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/rfc/RFC-003-estrategia-de-autenticacao.md) |
 
 ## Estrutura
 
@@ -179,11 +214,11 @@ Detalhes do contrato, dos tokens e o diagrama de sequência estão em [docs/auth
 
 O Terraform do API Gateway e das Lambdas fica no **TechChallenger-infra-kubernetes**, junto com a VPC e o EKS ([ADR-002](docs/adr/ADR-002-localizacao-terraform-lambda-api-gateway.md)). Este repositório não tem Terraform: o pipeline só publica o código nas funções que já existem.
 
-| Dado                                                           | Origem                                                                                |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `lambda_auth_function_name`, `lambda_authorizer_function_name` | Outputs do infra-kubernetes, usados pelo pipeline de deploy                           |
-| Conexão com o banco (`/techchallenger/db/*`)                   | SSM Parameter Store, publicado pelo infra-database e lido pelas Lambdas no cold start |
-| Segredo do JWT (`/techchallenger/jwt/secret`)                  | SSM Parameter Store, lido pelas Lambdas no cold start                                 |
+| Dado                                          | Origem                                                                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `lambda_auth_function_name`                   | Output do infra-kubernetes, usado pelo pipeline de deploy                                                     |
+| Conexão com o banco (`/techchallenger/db/*`)  | SSM Parameter Store, publicado pelo `ssm-parameters.yml` do infra-kubernetes e lido pela Lambda no cold start |
+| Segredo do JWT (`/techchallenger/jwt/secret`) | SSM Parameter Store, lido pela Lambda no cold start                                                           |
 
 Restrições do AWS Academy Learner Lab:
 
