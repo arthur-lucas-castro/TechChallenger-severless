@@ -5,6 +5,8 @@
 - **Repositórios afetados:** `lambda-auth`, `infra-kubernetes`, `infra-database`
 - **Nomes reais dos repositórios:** `lambda-auth` = TechChallenger-severless · `app-principal` = TechChallenger-Api · `infra-kubernetes` = TechChallenger-infra-kubernetes · `infra-database` = TechChallenger-infra-database
 
+> **Situação da implementação:** a infraestrutura da Lambda de autenticação e do API Gateway está no `infra-kubernetes`, como decidido. O **Lambda Authorizer** previsto abaixo **não foi implementado**: as rotas protegidas são validadas só pelo middleware JWT da API ([RFC-003 do TechChallenger-Api](https://github.com/arthur-lucas-castro/TechChallenger-Api/blob/main/docs/rfc/RFC-003-estrategia-de-autenticacao.md)).
+
 ## Contexto
 
 A autenticação de clientes por CPF passa a ser uma função serverless em Node.js (AWS Lambda), exposta por um API Gateway. A função:
