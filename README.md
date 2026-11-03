@@ -158,7 +158,7 @@ O Terraform do API Gateway e das Lambdas fica no **TechChallenger-infra-kubernet
 | Dado                                                           | Origem                                                                                |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | `lambda_auth_function_name`, `lambda_authorizer_function_name` | Outputs do infra-kubernetes, usados pelo pipeline de deploy                           |
-| Conexão com o banco (`/techchallenger/db/*`)                   | SSM Parameter Store, publicado pelo infra-database e lido pelas Lambdas no cold start |
+| Conexão com o banco (`/techchallenger/db/*`)                   | SSM Parameter Store, publicado pelo infra-kubernetes e lido pelas Lambdas no cold start |
 | Segredo do JWT (`/techchallenger/jwt/secret`)                  | SSM Parameter Store, lido pelas Lambdas no cold start                                 |
 
 Restrições do AWS Academy Learner Lab:

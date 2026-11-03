@@ -13,7 +13,7 @@ on:
         default: 'no'
 
 # EKS_CLUSTER_NAME: variável cluster_name do TechChallenger-infra-kubernetes.
-# DB_PARAM_PREFIX: prefixo publicado no SSM pelo TechChallenger-infra-database.
+# DB_PARAM_PREFIX: prefixo publicado no SSM pelo TechChallenger-infra-kubernetes.
 env:
   EKS_CLUSTER_NAME: techchallenger-fase1
   DB_PARAM_PREFIX: /techchallenger/db
