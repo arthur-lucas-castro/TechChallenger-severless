@@ -6,15 +6,15 @@ Autenticação de clientes da oficina mecânica por **CPF**: uma função **AWS 
 
 ## Tecnologias e dados para o Terraform
 
-| Item               | Valor                                                                                               |
-| ------------------ | --------------------------------------------------------------------------------------------------- |
-| Runtime            | `nodejs20.x`                                                                                        |
-| Handler            | `index.handler` (bundle na raiz do zip; no código-fonte, `src/index.js`)                            |
-| Arquitetura        | `arm64` ou `x86_64` (sem módulos nativos)                                                           |
-| Sistema de módulos | CommonJS: o Jest mocka módulos CJS de forma estável, enquanto em ESM o suporte ainda é experimental |
-| Banco              | RDS PostgreSQL, driver `pg`                                                                         |
-| Token              | `jsonwebtoken` (HS256)                                                                              |
-| Testes e qualidade | Jest, ESLint e Prettier                                                                             |
+| Item               | Valor                                                                                                     |
+| ------------------ | --------------------------------------------------------------------------------------------------------- |
+| Runtime            | `nodejs20.x`                                                                                              |
+| Handler            | `index.handler` (bundle na raiz do zip; no código-fonte, `src/index.js`), chamado pelo wrapper do Datadog |
+| Arquitetura        | `arm64` ou `x86_64` (sem módulos nativos)                                                                 |
+| Sistema de módulos | CommonJS: o Jest mocka módulos CJS de forma estável, enquanto em ESM o suporte ainda é experimental       |
+| Banco              | RDS PostgreSQL, driver `pg`                                                                               |
+| Token              | `jsonwebtoken` (HS256)                                                                                    |
+| Testes e qualidade | Jest, ESLint e Prettier                                                                                   |
 
 Comandos: `npm test`, `npm run test:coverage`, `npm run lint` e `npm run package`.
 
@@ -52,7 +52,13 @@ Jest, e não `node:test`, porque ele traz limite de cobertura que reprova o coma
 
 **Recomendação: zip.**
 
-`npm run package` instala as dependências de produção com `npm ci --omit=dev` em uma pasta isolada, `dist/build`, para não apagar as ferramentas de desenvolvimento. Depois gera um bundle minificado com esbuild e grava `dist/lambda-auth.zip`, que contém só `index.js`. O bundle reduz 906 KB de código e `node_modules` para 173 KB, o que diminui o que a Lambda precisa carregar no cold start. Testes, docs e `.git` ficam fora por construção. O `@aws-sdk/client-ssm` não vai no bundle, porque já existe no runtime `nodejs20.x`; por isso ele é dependência de desenvolvimento.
+`npm run package` instala as dependências de produção com `npm ci --omit=dev` em uma pasta isolada, `dist/build`, para não apagar as ferramentas de desenvolvimento. Depois gera um bundle minificado com esbuild e grava `dist/lambda-auth.zip`, com `index.js` e `node_modules/` só do `pg`. O pacote fica em cerca de 190 KB, contra 909 KB de código e `node_modules` sem bundle, o que diminui o que a Lambda precisa carregar no cold start. Testes, docs e `.git` ficam fora por construção.
+
+Ficam fora do bundle:
+
+- `@aws-sdk/client-ssm`: já existe no runtime `nodejs20.x`, por isso é dependência de desenvolvimento;
+- `datadog-lambda-js` e `dd-trace`: vêm do layer `Datadog-Node20-x` (ver [Observabilidade](#observabilidade-datadog));
+- `pg` e as dependências dele (`pg-pool`, `pg-protocol`, `pg-types` etc.): vão em `node_modules/` no zip. O tracer instrumenta o `pg` interceptando o `require('pg')`, e dentro do bundle esse `require` não existe; sem isso as queries ao RDS não apareceriam no trace. O script calcula as dependências a partir dos `package.json` instalados.
 
 **Arquitetura.** Não importa para o pacote: `pg`, `jsonwebtoken` e `bcryptjs` são JavaScript puro, sem `pg-native` nem o `bcrypt` nativo, e o mesmo zip funciona em `x86_64` e `arm64`. O esbuild é binário, mas só roda na máquina de build. O `arm64` costuma ser mais barato por tempo de execução; use-o se o lab permitir, ou `x86_64`, que é o padrão.
 
@@ -93,9 +99,26 @@ O smoke test de integração invoca a função com `events/sample-auth.json`. El
 
 ## Logs
 
-Cada requisição gera uma linha JSON no stdout, com `requestId` (`requestContext.requestId` do API Gateway, o mesmo dos access logs e do `x-correlation-id` enviado à API), `awsRequestId`, `route`, `status` e `durationMs`. Também podem aparecer `reason` (motivo real de uma recusa), `clienteId`, `familiaId` e `cpf` mascarado (`***.456.789-**`).
+Cada requisição gera uma linha JSON no stdout, com `requestId` e `correlationId` (ambos o `requestContext.requestId` do API Gateway, o mesmo dos access logs e do `x-correlation-id` enviado à API), `awsRequestId`, `route`, `status` e `durationMs`. Também podem aparecer `reason` (motivo real de uma recusa), `clienteId`, `familiaId` e `cpf` mascarado (`***.456.789-**`). Com o tracer do Datadog ativo, cada linha leva `dd.trace_id` e `dd.span_id`, que ligam o log ao trace da invocação.
 
 O logger oculta campos com nomes sensíveis (`token`, `password` etc.) e remove valores com formato de CPF, JWT ou refresh token de qualquer texto, inclusive de mensagens de erro de bibliotecas.
+
+## Observabilidade (Datadog)
+
+A função é monitorada pela **Datadog Lambda Extension**, configurada no Terraform do TechChallenger-infra-kubernetes (`lambda.tf`). Por que não a integração AWS do Datadog: [ADR-004](https://github.com/arthur-lucas-castro/TechChallenger-infra-kubernetes/blob/main/docs/adr/ADR-004-observabilidade-datadog.md).
+
+| O que              | Como                                                                                                                                                                                     |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Layers             | `Datadog-Extension` (envia os dados) e `Datadog-Node20-x` (`datadog-lambda-js` + `dd-trace`)                                                                                             |
+| Handler            | `/opt/nodejs/node_modules/datadog-lambda-js/handler.handler`, que inicia o tracer e chama o `index.handler` deste pacote (`DD_LAMBDA_HANDLER`)                                           |
+| Traces             | Um trace por invocação, com cold start e as queries ao RDS (`pg`). O payload não é capturado (`DD_CAPTURE_LAMBDA_PAYLOAD=false`), porque o body tem CPF, senha e tokens                  |
+| Logs               | O stdout da função, enviado pela extensão, com `service:techchallenger-auth`                                                                                                             |
+| Métricas da AWS    | Invocações, erros, duração e cold starts (`aws.lambda.enhanced.*`), geradas pela extensão                                                                                                |
+| Métrica de negócio | `oficina.integracao.falha` (distribution), tags `integracao:lambda_auth`, `operacao` (rota) e `causa` (`indisponivel` para banco ou SSM fora do ar, `erro_interno` para os demais erros) |
+
+A métrica de falha só conta erros técnicos (respostas 500 e 503). Recusas previstas do contrato, como CPF inválido, cliente inativo ou senha errada, não contam. A API envia a mesma métrica para falhas de SMTP e banco, então um único widget mostra as falhas de todas as integrações.
+
+`src/utils/datadog.js` carrega `datadog-lambda-js` e `dd-trace` só se existirem. Nos testes e na execução local eles não existem, e a métrica e os ids de trace viram no-op. A API key do Datadog não passa por este repositório: a extensão lê do SSM (`/techchallenger/datadog/api-key`).
 
 ## Migrations
 
