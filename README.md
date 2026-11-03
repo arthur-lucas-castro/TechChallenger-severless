@@ -73,20 +73,21 @@ A resposta esperada é `400 CPF_INVALIDO`, que prova que o bundle carrega e o ha
 
 ## Pipelines
 
-| Workflow                                   | Gatilho                                                                    | O que faz                                                                                                                                |
-| ------------------------------------------ | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/ci-cd.yml`              | Todo pull request; manual em `release/*`, com confirmação                  | Lint, testes com cobertura mínima e pacote. No disparo manual, chama o deploy e abre o PR para a `main`                                  |
-| `.github/workflows/deploy.yml`             | Chamado pelo `ci-cd.yml`; manual em `release/*` ou `main`, com confirmação | Testa, empacota, publica com `update-function-code`, faz dois smoke tests na função publicada e volta ao pacote anterior se algum falhar |
-| `.github/workflows/database-migration.yml` | Manual, com confirmação                                                    | Lê as credenciais do SSM e aplica `db/migrations/V*.sql` em um Job no EKS, usando um Secret temporário do Kubernetes                     |
+| Workflow                                   | Gatilho                                                                    | O que faz                                                                                                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/ci-cd.yml`              | Todo pull request; push na `main`; manual em `release/*`, com confirmação  | Lint, testes com cobertura mínima e pacote. No merge de um PR de `release/X.Y.Z` na `main`, chama o deploy; no disparo manual, faz o redeploy da release |
+| `.github/workflows/deploy.yml`             | Chamado pelo `ci-cd.yml`; manual em `release/*` ou `main`, com confirmação | Testa, empacota, publica com `update-function-code`, faz dois smoke tests na função publicada e volta ao pacote anterior se algum falhar                 |
+| `.github/workflows/database-migration.yml` | Manual, com confirmação                                                    | Lê as credenciais do SSM e aplica `db/migrations/V*.sql` em um Job no EKS, usando um Secret temporário do Kubernetes                                     |
 
-**Ordem do primeiro deploy:** `Database Migration` da API (cria `cliente` e `usuario`) → `Database Migration` deste repositório → `CI/CD Pipeline` em `release/X.Y.Z`. Sem as migrations, o smoke test de integração falha e o deploy é revertido.
+**Deploy automático:** o fluxo é `feat/*` → PR para `release/X.Y.Z` → PR para a `main`. O **merge do PR da release na `main`** dispara o `ci-cd.yml`, que roda lint, testes e pacote e, se o commit veio de um PR de `release/*`, publica a função pelo `deploy.yml`. Merges na `main` que não vêm de uma release não publicam. O deploy usa as credenciais do Learner Lab: renove os secrets antes de mergear uma release.
+
+**Ordem do primeiro deploy:** `Database Migration` da API (cria `cliente` e `usuario`) → `Database Migration` deste repositório → merge do PR da `release/X.Y.Z` na `main`. Sem as migrations, o smoke test de integração falha e o deploy é revertido.
 
 Configure no GitHub os secrets da AWS no ambiente `aws-deploy`, e os demais itens no repositório:
 
 | Item                                                              | Tipo     | Observação                                                                                  |
 | ----------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------- |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Secret   | Credenciais do Learner Lab. Expiram a cada sessão e precisam ser renovadas                  |
-| `RELEASE_MERGE_TOKEN`                                             | Secret   | Opcional, no repositório. Sem ele, usa o `GITHUB_TOKEN` para abrir o PR para a `main`       |
 | `LAMBDA_AUTH_FUNCTION_NAME`                                       | Variável | Opcional. O padrão é `techchallenger-fase1-auth`; precisa coincidir com o nome no Terraform |
 
 O smoke test de integração invoca a função com `events/sample-auth.json`. Ele aceita `200`, `403` e `404` e nunca exibe o corpo da resposta.

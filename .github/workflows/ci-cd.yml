@@ -1,11 +1,15 @@
 name: CI/CD Pipeline
 
+# Fluxo de release: o PR de release/X.Y.Z para a main roda lint, testes e pacote; o merge
+# (push na main) publica a Lambda. O disparo manual numa release/X.Y.Z serve para redeploy.
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       confirm_deploy:
-        description: 'Confirma o deploy da Lambda (camada extra de confirmação)?'
+        description: 'Confirma o deploy manual desta release (redeploy)?'
         required: true
         type: choice
         options:
@@ -52,57 +56,52 @@ jobs:
           if-no-files-found: ignore
           retention-days: 15
 
+  # Decide se há deploy. Um push na main só publica quando o commit veio do merge de um PR
+  # de release/X.Y.Z; outros merges na main rodam apenas lint, testes e pacote.
+  resolve-release:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release: ${{ steps.release.outputs.release }}
+      deploy: ${{ steps.release.outputs.deploy }}
+    steps:
+      - name: Descobrir a release que originou o deploy
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          CONFIRM: ${{ github.event.inputs.confirm_deploy }}
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = "push" ]; then
+            branch=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq \
+              '[.[] | select(.merged_at != null and .base.ref == "main" and (.head.ref | startswith("release/")))][0].head.ref // ""')
+            if [ -z "$branch" ]; then
+              echo "::notice::Commit na main sem PR de release/X.Y.Z: lint, testes e pacote rodam, deploy não."
+              echo "deploy=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            if [ "$CONFIRM" != "yes" ] || [[ "$REF_NAME" != release/* ]]; then
+              echo "::notice::Deploy manual exige uma branch release/X.Y.Z e confirm_deploy=yes."
+              echo "deploy=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            branch="$REF_NAME"
+          fi
+          echo "Deploy da Lambda a partir de $branch."
+          echo "release=$branch" >> "$GITHUB_OUTPUT"
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
   deploy:
-    needs: quality
-    if: >
-      github.event_name == 'workflow_dispatch' &&
-      inputs.confirm_deploy == 'yes' &&
-      startsWith(github.ref, 'refs/heads/release/')
+    needs: [quality, resolve-release]
+    if: needs.resolve-release.outputs.deploy == 'true'
     uses: ./.github/workflows/deploy.yml
     with:
       confirm_deploy: 'yes'
     secrets: inherit
-
-  merge-to-main:
-    needs: deploy
-    if: success() && startsWith(github.ref, 'refs/heads/release/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - name: Checkout do código
-        uses: actions/checkout@v4
-
-      - name: Verificar se há commits novos em relação à main
-        id: diff-check
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          ahead=$(gh api "repos/${{ github.repository }}/compare/main...${{ github.ref_name }}" --jq '.ahead_by')
-          echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
-          if [ "$ahead" = "0" ]; then
-            echo "Branch ${{ github.ref_name }} já está totalmente mesclada na main — nada para mesclar."
-          fi
-
-      - name: Criar Pull Request de release para main
-        if: steps.diff-check.outputs.ahead != '0'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          existing=$(gh pr list --base main --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number')
-          if [ -n "$existing" ]; then
-            echo "PR #$existing já existe para ${{ github.ref_name }} -> main."
-          else
-            gh pr create \
-              --base main \
-              --head "${{ github.ref_name }}" \
-              --title "Release ${{ github.ref_name }}" \
-              --body "Merge automático gerado pela pipeline após deploy bem-sucedido da Lambda."
-          fi
-
-      - name: Habilitar auto-merge no Pull Request
-        if: steps.diff-check.outputs.ahead != '0'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_MERGE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: gh pr merge "${{ github.ref_name }}" --auto --merge
