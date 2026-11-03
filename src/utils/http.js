@@ -6,6 +6,7 @@ const {
   isUnavailable,
 } = require('./errors');
 const { createLogger } = require('./logger');
+const { recordIntegrationFailure } = require('./datadog');
 
 const HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
@@ -52,7 +53,7 @@ function requireString(body, field) {
   return body[field];
 }
 
-function toAppError(err, log) {
+function toAppError(err, log, routeKey) {
   if (err instanceof AppError) {
     return err;
   }
@@ -62,7 +63,9 @@ function toAppError(err, log) {
     errorMessage: err.message,
     stack: err.stack,
   });
-  return isUnavailable(err) ? serviceUnavailable() : internalError();
+  const unavailable = isUnavailable(err);
+  recordIntegrationFailure(routeKey, unavailable ? 'indisponivel' : 'erro_interno');
+  return unavailable ? serviceUnavailable() : internalError();
 }
 
 /** Tratamento comum: log de fim de requisição e tradução de erros para o contrato HTTP. */
@@ -72,6 +75,8 @@ function withHttp(routeKey, fn) {
     const requestId = event.requestContext?.requestId;
     const log = createLogger({
       requestId,
+      // Mesmo id que o API Gateway grava nos access logs e envia à API em x-correlation-id.
+      correlationId: requestId,
       awsRequestId: context?.awsRequestId,
       route: routeKey,
     });
@@ -80,7 +85,7 @@ function withHttp(routeKey, fn) {
     try {
       response = await fn(event, log);
     } catch (err) {
-      const appError = toAppError(err, log);
+      const appError = toAppError(err, log, routeKey);
       if (appError.reason) {
         log.add({ reason: appError.reason });
       }

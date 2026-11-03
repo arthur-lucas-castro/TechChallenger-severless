@@ -1,4 +1,5 @@
 const { maskCpf } = require('./cpf');
+const { traceContext } = require('./datadog');
 
 const SERVICE = 'techchallenger-auth';
 
@@ -37,6 +38,8 @@ function write(level, message, fields) {
     service: SERVICE,
     message: scrub(message),
     ...sanitize(fields),
+    // dd.trace_id e dd.span_id: o Datadog liga esta linha ao trace da invocação.
+    ...traceContext(),
   };
   process.stdout.write(`${JSON.stringify(entry)}\n`);
 }

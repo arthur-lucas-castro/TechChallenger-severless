@@ -29,6 +29,20 @@ describe('createLogger', () => {
     expect(stdout.mock.calls[0][0].endsWith('\n')).toBe(true);
   });
 
+  it('inclui dd.trace_id e dd.span_id quando há span ativo', () => {
+    jest.isolateModules(() => {
+      jest.doMock('../../../src/utils/datadog', () => ({
+        traceContext: () => ({ dd: { trace_id: '111', span_id: '222' } }),
+      }));
+      const { createLogger: createTracedLogger } = require('../../../src/utils/logger');
+
+      createTracedLogger().info('ok');
+    });
+    jest.dontMock('../../../src/utils/datadog');
+
+    expect(lastLine().dd).toEqual({ trace_id: '111', span_id: '222' });
+  });
+
   it.each(['warn', 'error'])('grava o nível %s', (level) => {
     createLogger()[level]('mensagem');
 
