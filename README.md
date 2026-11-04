@@ -6,7 +6,6 @@ Autenticação de clientes da oficina mecânica por **CPF**: uma função **AWS 
 
 ## Tecnologias e dados para o Terraform
 
-
 | Item               | Valor                                                                                                     |
 | ------------------ | --------------------------------------------------------------------------------------------------------- |
 | Runtime            | `nodejs20.x`                                                                                              |
